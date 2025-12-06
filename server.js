@@ -544,7 +544,7 @@ function e(str) {
 // HTTPS SERVER (Let’s Encrypt)
 // ---------------------------------------------------------------------------
 
-// CHANGE THIS when you move to paste.3nd3r.net
+// CHANGE THIS 
 const domain = "paste.3nd3r.net";
 
 const httpsOptions = {
