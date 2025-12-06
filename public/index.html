@@ -35,6 +35,29 @@
       --text-soft: #94a3b8;
       --shadow: 0 10px 30px rgba(0,0,0,0.1);
     }
+    /* TERMINAL THEME (black & green) */
+    :root[data-theme="terminal"] {
+      --bg: #000000;
+      --bg-elevated: #020617;
+      --bg-soft: #020617;
+      --border: #064e3b;
+      --accent: #22c55e;
+      --accent-soft: rgba(34,197,94,0.16);
+      --success: #22c55e;
+      --danger: #f97373;
+      --text-primary: #ecfdf5;
+      --text-muted: #6ee7b7;
+      --text-soft: #4ade80;
+      --shadow: 0 20px 40px rgba(0,0,0,0.8);
+    }
+    :root[data-theme="terminal"] pre,
+    :root[data-theme="terminal"] textarea#pasteInput {
+      background:#020617;
+      color:#a7f3d0;
+    }
+    :root[data-theme="terminal"] a {
+      color:#4ade80;
+    }
 
     * { box-sizing:border-box; margin:0; padding:0; }
 
@@ -346,6 +369,9 @@
       </div>
       <div class="header-actions">
         <a href="/" class="btn btn-outline">Home</a>
+        <button class="btn btn-outline theme-toggle" data-theme-toggle>
+          <span class="theme-icon">Moon</span> <span class="theme-label">Dark</span>
+        </button>
       </div>
     </header>
     <div class="container">
@@ -369,8 +395,8 @@
       </div>
       <div class="header-actions">
         <button id="openDashboard" class="btn btn-success">My Shares</button>
-        <button id="themeToggle" class="btn btn-outline">
-          <span id="themeIcon">Moon</span> <span id="themeLabel">Dark</span>
+        <button class="btn btn-outline theme-toggle" data-theme-toggle>
+          <span class="theme-icon">Moon</span> <span class="theme-label">Dark</span>
         </button>
       </div>
     </header>
@@ -458,15 +484,51 @@
       return fixed + ' ' + units[i];
     }
 
-    // THEME INIT
+    // THEME INIT (dark, light, terminal)
     const storedTheme = localStorage.getItem('theme');
-    if (storedTheme === 'light' || storedTheme === 'dark') {
+    const allowedThemes = ['dark', 'light', 'terminal'];
+
+    if (allowedThemes.includes(storedTheme)) {
       document.documentElement.dataset.theme = storedTheme;
     } else {
       document.documentElement.dataset.theme =
         window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
           ? 'light'
           : 'dark';
+    }
+
+    const themeOrder = ['dark', 'light', 'terminal'];
+
+    function updateThemeButtons() {
+      const t = document.documentElement.dataset.theme;
+      let iconText, labelText;
+      if (t === 'light') {
+        iconText = 'Moon';
+        labelText = 'Dark';
+      } else if (t === 'terminal') {
+        iconText = '⌨︎';
+        labelText = 'Terminal';
+      } else {
+        iconText = 'Sun';
+        labelText = 'Light';
+      }
+      document.querySelectorAll('.theme-icon').forEach(el => el.textContent = iconText);
+      document.querySelectorAll('.theme-label').forEach(el => el.textContent = labelText);
+    }
+
+    function setupThemeToggles() {
+      document.querySelectorAll('[data-theme-toggle]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const root = document.documentElement;
+          const current = root.dataset.theme || 'dark';
+          const idx = themeOrder.indexOf(current);
+          const next = themeOrder[(idx + 1) % themeOrder.length];
+          root.dataset.theme = next;
+          localStorage.setItem('theme', next);
+          updateThemeButtons();
+        });
+      });
+      updateThemeButtons();
     }
 
     // ROUTING: server handles /p/:id and /f/:id directly
@@ -627,6 +689,9 @@
           if (err && err.message === 'unauth') return;
           tableContainer.innerHTML = '<div class="empty">Error loading shares.</div>';
         });
+
+      // Make sure theme toggles are wired even in dashboard-only route
+      setupThemeToggles();
     }
 
     // -------- MAIN APP --------
@@ -634,26 +699,6 @@
       document.getElementById('app').style.display = 'block';
       document.getElementById('view').style.display = 'none';
       document.title = 'Pastebin';
-
-      // THEME BUTTON
-      const themeBtn = document.getElementById('themeToggle');
-      const icon = document.getElementById('themeIcon');
-      const label = document.getElementById('themeLabel');
-
-      const updateThemeButton = () => {
-        const isLight = document.documentElement.dataset.theme === 'light';
-        icon.textContent = isLight ? 'Moon' : 'Sun';
-        label.textContent = isLight ? 'Dark' : 'Light';
-      };
-
-      themeBtn.onclick = () => {
-        const root = document.documentElement;
-        root.dataset.theme = root.dataset.theme === 'light' ? 'dark' : 'light';
-        localStorage.setItem('theme', root.dataset.theme);
-        updateThemeButton();
-      };
-
-      updateThemeButton();
 
       const authStatusEl = document.getElementById('authStatus');
       const loggedOutView = document.getElementById('loggedOutView');
@@ -905,8 +950,14 @@
 
       // Initial state
       setMode('files');
+
+      // Wire theme toggles on home too
+      setupThemeToggles();
     }
+
+    // Ensure theme toggles are wired even if initApp/renderDashboard were already called
+    // (they each call setupThemeToggles once, but in case script order changes, this is safe)
+    setupThemeToggles();
   </script>
 </body>
 </html>
-
