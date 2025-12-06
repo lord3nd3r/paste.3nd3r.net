@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <title>Pastebin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #020617;
+      --bg-elevated: #0f172a;
+      --bg-soft: #1e293b;
+      --border: #334155;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56,189,248,0.15);
+      --success: #22c55e;
+      --danger: #f97373;
+      --text-primary: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-soft: #64748b;
+      --shadow: 0 20px 40px rgba(0,0,0,0.5);
+      --radius-lg: 1.1rem;
+      --radius-pill: 999px;
+    }
+    :root[data-theme="light"] {
+      --bg: #f8fafc;
+      --bg-elevated: #ffffff;
+      --bg-soft: #f1f5f9;
+      --border: #e2e8f0;
+      --accent: #0ea5e9;
+      --accent-soft: rgba(14,165,233,0.12);
+      --success: #16a34a;
+      --danger: #ef4444;
+      --text-primary: #0f172a;
+      --text-muted: #64748b;
+      --text-soft: #94a3b8;
+      --shadow: 0 10px 30px rgba(0,0,0,0.1);
+    }
+
+    * { box-sizing:border-box; margin:0; padding:0; }
+
+    body {
+      font-family:system-ui,-apple-system,sans-serif;
+      background:var(--bg);
+      color:var(--text-primary);
+      min-height:100vh;
+    }
+
+    header {
+      padding:1.5rem 2rem;
+      border-bottom:1px solid var(--border);
+      background:var(--bg-elevated);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      box-shadow:0 4px 20px rgba(0,0,0,0.3);
+      position:sticky;
+      top:0;
+      z-index:10;
+    }
+
+    .brand {
+      display:flex;
+      align-items:center;
+      gap:0.8rem;
+      font-weight:600;
+      font-size:1.1rem;
+    }
+
+    .brand-logo {
+      width:40px;
+      height:40px;
+      border-radius:50%;
+      background:radial-gradient(circle at 30% 30%, var(--accent), #1e293b);
+      color:white;
+      display:grid;
+      place-items:center;
+      font-weight:900;
+      box-shadow:0 0 0 2px rgba(56,189,248,.4);
+    }
+
+    .header-actions {
+      display:flex;
+      gap:1rem;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+
+    .container {
+      max-width:1100px;
+      margin:0 auto;
+      padding:2rem;
+    }
+
+    .card {
+      background:var(--bg-elevated);
+      border-radius:var(--radius-lg);
+      padding:2rem;
+      border:1px solid var(--border);
+      box-shadow:var(--shadow);
+    }
+
+    .btn {
+      background:var(--accent);
+      color:white;
+      border:none;
+      padding:.7rem 1.4rem;
+      border-radius:var(--radius-pill);
+      cursor:pointer;
+      font-weight:600;
+      box-shadow:0 8px 25px rgba(56,189,248,0.3);
+      transition:all .2s;
+      white-space:nowrap;
+      font-size:0.95rem;
+    }
+    .btn:hover { transform:translateY(-2px); }
+    .btn-outline {
+      background:transparent;
+      color:var(--text-muted);
+      border:1px solid var(--border);
+      box-shadow:none;
+    }
+    .btn-success { background:var(--success); }
+
+    .btn-sm {
+      padding:0.3rem 0.7rem;
+      font-size:0.8rem;
+      box-shadow:none;
+    }
+    .btn-danger {
+      border-color:var(--danger);
+      color:var(--danger);
+      background:transparent;
+    }
+    .btn-danger:hover {
+      background:rgba(248,113,113,0.1);
+    }
+
+    table {
+      width:100%;
+      border-collapse:collapse;
+      margin-top:1.5rem;
+    }
+    th, td {
+      padding:1rem;
+      text-align:left;
+      border-bottom:1px solid var(--border);
+      vertical-align:middle;
+    }
+    th { background:var(--bg-soft); }
+    tr:hover { background:var(--bg-soft); }
+
+    pre {
+      background:#0f172a;
+      color:#e2e8f0;
+      padding:1.5rem;
+      border-radius:1rem;
+      overflow-x:auto;
+      white-space:pre-wrap;
+      font-family:ui-monospace,monospace;
+    }
+    :root[data-theme="light"] pre {
+      background:#f8fafc;
+      color:#0f172a;
+    }
+
+    .never { color:var(--success); font-weight:600; }
+    .empty { text-align:center; padding:5rem 0; color:var(--text-muted); font-size:1.3rem; }
+
+    .mode-toggle-row {
+      display:flex;
+      justify-content:center;
+      gap:1rem;
+      margin-bottom:2rem;
+      flex-wrap:wrap;
+    }
+
+    .expiry-row {
+      display:flex;
+      justify-content:center;
+      gap:0.8rem;
+      flex-wrap:wrap;
+      margin-bottom:2.5rem;
+    }
+
+    .expiry-btn {
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border);
+      padding: 0.45rem 1rem;
+      font-size: 0.9rem;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s, transform .1s;
+    }
+    .expiry-btn:hover {
+      transform: translateY(-1px);
+      border-color: var(--accent);
+    }
+    .expiry-btn.active {
+      background: var(--success);
+      color: #ffffff;
+      border-color: var(--success);
+    }
+
+    .auth-row {
+      display:flex;
+      flex-direction:column;
+      gap:0.75rem;
+      margin-bottom:1.5rem;
+    }
+    .auth-fields {
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.6rem;
+      align-items:center;
+    }
+    .auth-fields input {
+      padding:0.55rem 0.75rem;
+      border-radius:0.75rem;
+      border:1px solid var(--border);
+      background:var(--bg-soft);
+      color:var(--text-primary);
+      min-width:0;
+      flex:1 1 150px;
+    }
+    .auth-meta {
+      font-size:0.85rem;
+      color:var(--text-muted);
+    }
+    .auth-status {
+      font-size:0.85rem;
+      min-height:1.2em;
+    }
+    .auth-status.error {
+      color:#f97373;
+    }
+    .auth-status.ok {
+      color:var(--success);
+    }
+
+    .logged-in-row {
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:0.5rem;
+      margin-bottom:1.5rem;
+    }
+
+    @media (max-width: 768px) {
+      header {
+        padding:1rem 1.25rem;
+        flex-direction:column;
+        align-items:flex-start;
+        gap:0.75rem;
+      }
+
+      .container {
+        padding:1.25rem 1rem;
+      }
+
+      .card {
+        padding:1.5rem 1.25rem;
+      }
+
+      .brand-logo {
+        width:32px;
+        height:32px;
+        font-size:0.9rem;
+      }
+
+      .header-actions {
+        width:100%;
+        justify-content:flex-start;
+        gap:0.75rem;
+      }
+
+      .header-actions .btn {
+        padding:.55rem 1.1rem;
+        font-size:0.9rem;
+      }
+
+      .mode-toggle-row {
+        gap:0.6rem;
+      }
+      .mode-toggle-row .btn {
+        flex:1 1 45%;
+        text-align:center;
+      }
+
+      .expiry-row {
+        gap:0.5rem;
+      }
+      .expiry-btn {
+        flex:1 1 45%;
+        text-align:center;
+        font-size:0.85rem;
+        padding:0.4rem 0.75rem;
+      }
+
+      #fileDropzone {
+        padding:2.5rem 1.5rem !important;
+      }
+      #fileDropzone div:first-child {
+        font-size:1.4rem !important;
+      }
+
+      #pasteInput {
+        min-height:200px !important;
+        font-size:0.95rem !important;
+      }
+
+      table {
+        display:block;
+        width:100%;
+        overflow-x:auto;
+        white-space:nowrap;
+      }
+      th, td {
+        padding:0.75rem 0.5rem;
+        font-size:0.9rem;
+      }
+
+      .auth-fields {
+        flex-direction:column;
+        align-items:stretch;
+      }
+      .auth-fields input {
+        width:100%;
+      }
+      .auth-fields .btn {
+        width:100%;
+        justify-content:center;
+        text-align:center;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- VIEW PAGE (dashboard only) -->
+  <div id="view" style="display:none">
+    <header>
+      <div class="brand">
+        <div class="brand-logo">P</div>
+        <div>Pastebin</div>
+      </div>
+      <div class="header-actions">
+        <a href="/" class="btn btn-outline">Home</a>
+      </div>
+    </header>
+    <div class="container">
+      <div class="card">
+        <h1 id="vtitle"></h1>
+        <div style="color:var(--text-muted);margin:1rem 0" id="vmeta"></div>
+        <div id="vcontent"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="app">
+    <header>
+      <div class="brand">
+        <div class="brand-logo">P</div>
+        <div>
+          <div style="font-weight:600;font-size:1.2rem">Pastebin</div>
+          <div style="font-size:0.85rem;color:var(--text-muted)">Instant • Private • Forever</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="openDashboard" class="btn btn-success">My Shares</button>
+        <button id="themeToggle" class="btn btn-outline">
+          <span id="themeIcon">Moon</span> <span id="themeLabel">Dark</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="container">
+      <div class="card" style="max-width:800px;margin:auto">
+        <h1 style="text-align:center;margin-bottom:2rem">Share anything in seconds</h1>
+
+        <!-- AUTH SECTION -->
+        <div id="authSection">
+          <div id="loggedOutView" class="auth-row">
+            <div class="auth-meta">
+              Create an account or log in. Your files and pastes will be tied to your account and only visible in your own dashboard.
+            </div>
+            <div class="auth-fields">
+              <input id="authEmail" type="email" placeholder="Email" autocomplete="email">
+              <input id="authPassword" type="password" placeholder="Password (min 6 chars)" autocomplete="current-password">
+              <button id="loginBtn" class="btn btn-success">Log in</button>
+              <button id="registerBtn" class="btn btn-outline">Register</button>
+            </div>
+            <div id="authStatus" class="auth-status"></div>
+          </div>
+
+          <div id="loggedInView" class="logged-in-row" style="display:none">
+            <div>
+              <div style="font-size:0.9rem;color:var(--text-muted)">Logged in as</div>
+              <div id="userLabel" style="font-size:0.95rem;font-weight:600"></div>
+            </div>
+            <button id="logoutBtn" class="btn btn-outline">Log out</button>
+          </div>
+        </div>
+
+        <!-- MAIN SHARE UI (hidden until logged in) -->
+        <div id="mainContent" style="display:none">
+          <div class="mode-toggle-row">
+            <button id="modeFilesBtn" class="btn" style="background:var(--accent)">Files</button>
+            <button id="modePasteBtn" class="btn btn-outline">Paste</button>
+          </div>
+
+          <div class="expiry-row">
+            <button class="expiry-btn" data-expiry="1h">1 hour</button>
+            <button class="expiry-btn active" data-expiry="1d">1 day</button>
+            <button class="expiry-btn" data-expiry="7d">7 days</button>
+            <button class="expiry-btn" data-expiry="30d">30 days</button>
+            <button class="expiry-btn" data-expiry="never">Never expires</button>
+          </div>
+
+          <div id="fileDropzone" style="border:2px dashed var(--border);padding:4rem;border-radius:1.4rem;text-align:center;cursor:pointer;transition:.2s">
+            <div style="font-size:2rem;margin-bottom:1rem">Drop files anywhere</div>
+            <div style="color:var(--text-muted);margin-bottom:2rem">or</div>
+            <button id="browseBtn" class="btn" style="font-size:1.1rem;padding:.9rem 2rem">Choose files</button>
+            <input id="fileInput" type="file" multiple style="display:none">
+          </div>
+
+          <div id="pasteContainer" style="display:none">
+            <textarea id="pasteInput" placeholder="Paste code, logs, text — it’s saved forever on this server…" style="width:100%;min-height:260px;padding:1.4rem;border-radius:1rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);font-family:ui-monospace,monospace;font-size:1.02rem"></textarea>
+            <div style="text-align:right;margin-top:1.2rem">
+              <button id="pasteSubmitBtn" class="btn" style="padding:.8rem 2rem;font-size:1.1rem">Share paste</button>
+            </div>
+          </div>
+
+          <div id="status" style="margin-top:2.5rem;text-align:center;font-size:1.2rem"></div>
+        </div>
+
+        <!-- Shown only when logged out -->
+        <div id="loggedOutHint" style="display:none;margin-top:2rem;text-align:center;color:var(--text-muted);font-size:0.95rem">
+          Log in above to upload files or create pastes.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Simple byte formatter for dashboard stats
+    function formatBytes(bytes) {
+      if (!bytes || bytes <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      let value = bytes;
+      while (value >= 1024 && i < units.length - 1) {
+        value /= 1024;
+        i++;
+      }
+      const fixed = value >= 10 || i === 0 ? value.toFixed(0) : value.toFixed(1);
+      return fixed + ' ' + units[i];
+    }
+
+    // THEME INIT
+    const storedTheme = localStorage.getItem('theme');
+    if (storedTheme === 'light' || storedTheme === 'dark') {
+      document.documentElement.dataset.theme = storedTheme;
+    } else {
+      document.documentElement.dataset.theme =
+        window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+          ? 'light'
+          : 'dark';
+    }
+
+    // ROUTING: server handles /p/:id and /f/:id directly
+    if (location.pathname === '/dashboard') {
+      renderDashboard();
+    } else {
+      initApp();
+    }
+
+    // -------- VIEW: dashboard --------
+    function renderDashboard() {
+      document.getElementById('app').style.display = 'none';
+      document.getElementById('view').style.display = 'block';
+
+      const vtitle = document.getElementById('vtitle');
+      const vmeta  = document.getElementById('vmeta');
+      const vcontent = document.getElementById('vcontent');
+
+      vtitle.textContent = 'My Shares';
+      vmeta.innerHTML = '';
+      vcontent.innerHTML = `
+        <div id="dashStats" style="margin-bottom:1rem;font-size:0.95rem;color:var(--text-muted);"></div>
+        <div id="dashTableContainer" style="text-align:center;color:var(--text-muted)">Loading…</div>
+      `;
+      document.title = 'My Shares — Pastebin';
+
+      const statsEl = document.getElementById('dashStats');
+      const tableContainer = document.getElementById('dashTableContainer');
+
+      // Fetch usage stats first
+      fetch('/api/usage')
+        .then(r => {
+          if (r.status === 401) {
+            tableContainer.innerHTML = '<div class="empty">You must be logged in to view your shares.</div>';
+            throw new Error('unauth');
+          }
+          return r.json();
+        })
+        .then(stats => {
+          const used = formatBytes(stats.usedBytes);
+          const quota = formatBytes(stats.quotaBytes);
+          const left = formatBytes(stats.remainingBytes);
+          statsEl.textContent =
+            `You have ${stats.fileCount} file${stats.fileCount === 1 ? '' : 's'}, using ${used} of ${quota} (${left} remaining).`;
+          // Now fetch shares
+          return fetch('/api/shares');
+        })
+        .then(r => {
+          if (!r) return;
+          if (r.status === 401) {
+            tableContainer.innerHTML = '<div class="empty">You must be logged in to view your shares.</div>';
+            return null;
+          }
+          return r.json();
+        })
+        .then(list => {
+          if (!list) return;
+          if (!list.length) {
+            tableContainer.innerHTML = '<div class="empty">No shares yet — go make some magic!</div>';
+            return;
+          }
+
+          tableContainer.innerHTML = `
+            <table>
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>Type</th>
+                  <th>Views</th>
+                  <th>Size</th>
+                  <th>Created</th>
+                  <th>Expires</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${list.map(s => {
+                  const href = `/${s.type === 'paste' ? 'p' : 'f'}/${s.id}`;
+                  const views = typeof s.views === 'number' ? s.views : 0;
+                  const sizeLabel = s.type === 'file' ? formatBytes(s.size || 0) : '—';
+                  return `
+                    <tr data-id="${s.id}" data-type="${s.type}">
+                      <td>
+                        <a href="${href}" target="_blank" rel="noopener">
+                          ${s.title}
+                        </a>
+                      </td>
+                      <td>${s.type}</td>
+                      <td>${views}</td>
+                      <td>${sizeLabel}</td>
+                      <td>${new Date(s.created).toLocaleString()}</td>
+                      <td><span class="never">Never</span></td>
+                      <td>
+                        <button class="btn btn-sm btn-outline dash-copy">Copy link</button>
+                        <button class="btn btn-sm btn-danger dash-delete">Delete</button>
+                      </td>
+                    </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          `;
+
+          // Wire up actions
+          const rows = tableContainer.querySelectorAll('tbody tr');
+          rows.forEach(row => {
+            const id = row.getAttribute('data-id');
+            const type = row.getAttribute('data-type');
+            const href = `/${type === 'paste' ? 'p' : 'f'}/${id}`;
+            const fullUrl = location.origin + href;
+
+            const copyBtn = row.querySelector('.dash-copy');
+            const delBtn  = row.querySelector('.dash-delete');
+
+            if (copyBtn) {
+              copyBtn.addEventListener('click', () => {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                  navigator.clipboard.writeText(fullUrl)
+                    .then(() => {
+                      copyBtn.textContent = 'Copied!';
+                      setTimeout(() => (copyBtn.textContent = 'Copy link'), 1200);
+                    })
+                    .catch(() => {
+                      alert('Link: ' + fullUrl);
+                    });
+                } else {
+                  alert('Link: ' + fullUrl);
+                }
+              });
+            }
+
+            if (delBtn) {
+              delBtn.addEventListener('click', () => {
+                if (!confirm('Delete this share? This cannot be undone.')) return;
+
+                fetch(`/api/share/${type}/${id}`, { method: 'DELETE' })
+                  .then(r => r.json())
+                  .then(data => {
+                    if (data && data.ok) {
+                      row.remove();
+                      if (!tableContainer.querySelector('tbody tr')) {
+                        tableContainer.innerHTML = '<div class="empty">No shares left.</div>';
+                        statsEl.textContent = '';
+                      }
+                    } else if (data && data.error) {
+                      alert('Error deleting: ' + data.error);
+                    } else {
+                      alert('Error deleting share.');
+                    }
+                  })
+                  .catch(() => {
+                    alert('Error deleting share.');
+                  });
+              });
+            }
+          });
+        })
+        .catch(err => {
+          if (err && err.message === 'unauth') return;
+          tableContainer.innerHTML = '<div class="empty">Error loading shares.</div>';
+        });
+    }
+
+    // -------- MAIN APP --------
+    function initApp() {
+      document.getElementById('app').style.display = 'block';
+      document.getElementById('view').style.display = 'none';
+      document.title = 'Pastebin';
+
+      // THEME BUTTON
+      const themeBtn = document.getElementById('themeToggle');
+      const icon = document.getElementById('themeIcon');
+      const label = document.getElementById('themeLabel');
+
+      const updateThemeButton = () => {
+        const isLight = document.documentElement.dataset.theme === 'light';
+        icon.textContent = isLight ? 'Moon' : 'Sun';
+        label.textContent = isLight ? 'Dark' : 'Light';
+      };
+
+      themeBtn.onclick = () => {
+        const root = document.documentElement;
+        root.dataset.theme = root.dataset.theme === 'light' ? 'dark' : 'light';
+        localStorage.setItem('theme', root.dataset.theme);
+        updateThemeButton();
+      };
+
+      updateThemeButton();
+
+      const authStatusEl = document.getElementById('authStatus');
+      const loggedOutView = document.getElementById('loggedOutView');
+      const loggedInView = document.getElementById('loggedInView');
+      const userLabel = document.getElementById('userLabel');
+      const mainContent = document.getElementById('mainContent');
+      const loggedOutHint = document.getElementById('loggedOutHint');
+
+      function setLoggedIn(email) {
+        loggedOutView.style.display = 'none';
+        loggedInView.style.display = 'flex';
+        userLabel.textContent = email;
+        mainContent.style.display = 'block';
+        loggedOutHint.style.display = 'none';
+        authStatusEl.textContent = '';
+        authStatusEl.className = 'auth-status';
+      }
+
+      function setLoggedOut() {
+        loggedOutView.style.display = 'block';
+        loggedInView.style.display = 'none';
+        mainContent.style.display = 'none';
+        loggedOutHint.style.display = 'block';
+        authStatusEl.textContent = '';
+        authStatusEl.className = 'auth-status';
+      }
+
+      // Check current auth state
+      fetch('/api/me')
+        .then(r => r.json())
+        .then(me => {
+          if (me.loggedIn) {
+            setLoggedIn(me.email);
+          } else {
+            setLoggedOut();
+          }
+        })
+        .catch(() => {
+          setLoggedOut();
+        });
+
+      // AUTH BUTTONS
+      document.getElementById('loginBtn').onclick = () => {
+        const email = document.getElementById('authEmail').value.trim();
+        const password = document.getElementById('authPassword').value;
+
+        authStatusEl.textContent = 'Logging in…';
+        authStatusEl.className = 'auth-status';
+
+        fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        })
+          .then(r => r.json())
+          .then(data => {
+            if (data.error) {
+              authStatusEl.textContent = data.error;
+              authStatusEl.className = 'auth-status error';
+              return;
+            }
+            authStatusEl.textContent = 'Logged in!';
+            authStatusEl.className = 'auth-status ok';
+            setLoggedIn(data.email);
+          })
+          .catch(() => {
+            authStatusEl.textContent = 'Error logging in.';
+            authStatusEl.className = 'auth-status error';
+          });
+      };
+
+      document.getElementById('registerBtn').onclick = () => {
+        const email = document.getElementById('authEmail').value.trim();
+        const password = document.getElementById('authPassword').value;
+
+        authStatusEl.textContent = 'Creating account…';
+        authStatusEl.className = 'auth-status';
+
+        fetch('/api/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        })
+          .then(r => r.json())
+          .then(data => {
+            if (data.error) {
+              authStatusEl.textContent = data.error;
+              authStatusEl.className = 'auth-status error';
+              return;
+            }
+            authStatusEl.textContent = 'Account created & logged in!';
+            authStatusEl.className = 'auth-status ok';
+            setLoggedIn(data.email);
+          })
+          .catch(() => {
+            authStatusEl.textContent = 'Error creating account.';
+            authStatusEl.className = 'auth-status error';
+          });
+      };
+
+      document.getElementById('logoutBtn').onclick = () => {
+        fetch('/api/logout', { method: 'POST' })
+          .then(() => {
+            setLoggedOut();
+          })
+          .catch(() => {
+            setLoggedOut();
+          });
+      };
+
+      // MODE
+      const setMode = m => {
+        document.getElementById('modeFilesBtn').style.background =
+          m === 'files' ? 'var(--accent)' : 'var(--bg-soft)';
+        document.getElementById('modePasteBtn').style.background =
+          m === 'paste' ? 'var(--accent)' : 'var(--bg-soft)';
+        document.getElementById('fileDropzone').style.display =
+          m === 'files' ? 'block' : 'none';
+        document.getElementById('pasteContainer').style.display =
+          m === 'paste' ? 'block' : 'none';
+      };
+
+      document.getElementById('modeFilesBtn').onclick = () => setMode('files');
+      document.getElementById('modePasteBtn').onclick = () => setMode('paste');
+
+      // EXPIRY (UI only for now, value sent with uploads)
+      document.querySelectorAll('.expiry-btn').forEach(b => {
+        b.onclick = () => {
+          document.querySelectorAll('.expiry-btn').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+        };
+      });
+
+      const getExpiry = () => {
+        const active = document.querySelector('.expiry-btn.active');
+        if (!active) return null;
+        const v = active.dataset.expiry;
+        return v === 'never' ? null : v;
+      };
+
+      // FILE HANDLING
+      const fileInput = document.getElementById('fileInput');
+      const dropzone  = document.getElementById('fileDropzone');
+      const statusEl  = document.getElementById('status');
+
+      document.getElementById('browseBtn').onclick = () => fileInput.click();
+      fileInput.onchange = e => handleFiles(e.target.files);
+
+      function handleFiles(files) {
+        if (!files || !files.length) return;
+
+        const fd = new FormData();
+        fd.append('file', files[0]);
+
+        const expiry = getExpiry();
+        if (expiry) fd.append('expiry', expiry); // ready for future backend logic
+
+        statusEl.textContent = 'Uploading…';
+
+        fetch('/upload', {
+          method: 'POST',
+          body: fd
+        })
+          .then(r => {
+            if (r.status === 401) {
+              statusEl.textContent = 'You must be logged in to upload.';
+              return null;
+            }
+            return r.json();
+          })
+          .then(data => {
+            if (!data) return;
+            if (data.error) {
+              statusEl.textContent = 'Error: ' + data.error;
+              return;
+            }
+            const url = data.url;
+            statusEl.innerHTML =
+              `Uploaded!<br><a href="${url}" target="_blank" rel="noopener" style="font-size:1.4rem;font-weight:600">${url}</a>`;
+          })
+          .catch(() => {
+            statusEl.textContent = 'Upload failed.';
+          });
+      }
+
+      // Drag & drop
+      ['dragenter', 'dragover'].forEach(evt => {
+        dropzone.addEventListener(evt, e => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropzone.style.borderColor = 'var(--accent)';
+        });
+      });
+
+      ['dragleave', 'dragend', 'drop'].forEach(evt => {
+        dropzone.addEventListener(evt, e => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropzone.style.borderColor = 'var(--border)';
+        });
+      });
+
+      dropzone.addEventListener('drop', e => {
+        const files = e.dataTransfer.files;
+        handleFiles(files);
+      });
+
+      dropzone.addEventListener('click', () => fileInput.click());
+
+      // PASTE
+      document.getElementById('pasteSubmitBtn').onclick = () => {
+        const text = document.getElementById('pasteInput').value.trim();
+        if (!text) return;
+
+        statusEl.textContent = 'Saving…';
+
+        fetch('/paste', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: text
+        })
+          .then(r => {
+            if (r.status === 401) {
+              statusEl.textContent = 'You must be logged in to save pastes.';
+              return null;
+            }
+            return r.json();
+          })
+          .then(data => {
+            if (!data) return;
+            if (data.error) {
+              statusEl.textContent = 'Error: ' + data.error;
+              return;
+            }
+            const url = data.url;
+            statusEl.innerHTML =
+              `Paste ready!<br><a href="${url}" target="_blank" rel="noopener" style="font-size:1.4rem;font-weight:600">${url}</a>`;
+            document.getElementById('pasteInput').value = '';
+          })
+          .catch(() => {
+            statusEl.textContent = 'Error saving paste.';
+          });
+      };
+
+      // DASHBOARD
+      document.getElementById('openDashboard').onclick = () => {
+        location.href = '/dashboard';
+      };
+
+      // Initial state
+      setMode('files');
+    }
+  </script>
+</body>
+</html>
+
