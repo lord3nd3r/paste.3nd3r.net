@@ -1,5 +1,5 @@
 // ==============================
-//  Pastebin – Server (admin, moderation, frame viewer & reports)
+// Pastebin – Server (with admin, moderation & Sharp)
 // ==============================
 
 const express = require('express');
@@ -12,6 +12,7 @@ const http = require('http');
 const https = require('https');
 const bcrypt = require('bcryptjs');
 const cookieParser = require('cookie-parser');
+const sharp = require('sharp'); // image processing / strip metadata
 
 const app = express();
 
@@ -25,7 +26,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const QUOTA_BYTES = 1024 * 1024 * 1024;
 
 // Owner (hard admin)
-const OWNER_EMAIL = 'admin@email.tld';
+const OWNER_EMAIL = 'lord3nd3r@gmail.com';
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -81,16 +82,16 @@ db.serialize(() => {
       created INTEGER
   )`);
 
+  // Reports table (for file/paste reports)
   db.run(`CREATE TABLE IF NOT EXISTS reports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      type TEXT,
-      share_id TEXT,
-      reporter_user_id INTEGER,
-      reporter_ip TEXT,
+      target_type TEXT,          -- 'file' or 'paste'
+      target_id TEXT,
       reason TEXT,
+      status TEXT DEFAULT 'open', -- 'open' or 'resolved'
       created INTEGER,
-      status TEXT DEFAULT 'open',
-      admin_note TEXT
+      reporter_user_id INTEGER,
+      reporter_ip TEXT
   )`);
 
   // Legacy migrations if old DBs exist
@@ -127,16 +128,6 @@ db.serialize(() => {
   db.run(`ALTER TABLE pastes ADD COLUMN expires INTEGER`, err => {
     if (err && !/duplicate column/i.test(err.message || '')) {
       console.error('Error adding pastes.expires column:', err);
-    }
-  });
-  db.run(`ALTER TABLE reports ADD COLUMN status TEXT DEFAULT 'open'`, err => {
-    if (err && !/duplicate column/i.test(err.message || '')) {
-      console.error('Error adding reports.status column:', err);
-    }
-  });
-  db.run(`ALTER TABLE reports ADD COLUMN admin_note TEXT`, err => {
-    if (err && !/duplicate column/i.test(err.message || '')) {
-      console.error('Error adding reports.admin_note column:', err);
     }
   });
 });
@@ -212,14 +203,6 @@ function isAdmin(user) {
   if (user.email === OWNER_EMAIL) return true;
   if (user.role === 'admin' || user.role === 'mod') return true;
   return false;
-}
-
-function isValidShareType(t) {
-  return t === 'file' || t === 'paste';
-}
-
-function isValidReportStatus(s) {
-  return s === 'open' || s === 'reviewed' || s === 'dismissed';
 }
 
 // ---------------------------------------------------------------------------
@@ -434,62 +417,100 @@ app.get('/api/me', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// UPLOAD FILE
+// UPLOAD FILE  (with Sharp to strip image metadata)
 // ---------------------------------------------------------------------------
 
-app.post('/upload', requireAuth, upload.single('file'), (req, res) => {
+app.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
 
-  const newFileSize = req.file.size;
-  const expiryCode = req.body && req.body.expiry;
-  const expiresAt = computeExpiry(expiryCode);
+  try {
+    // If it's an image, re-encode via Sharp to strip metadata
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    const imgExts = ['.png', '.jpg', '.jpeg', '.webp', '.avif'];
+    if (imgExts.includes(ext)) {
+      try {
+        let pipeline = sharp(req.file.path, { failOnError: false });
 
-  db.get(
-    'SELECT IFNULL(SUM(size),0) AS used FROM files WHERE user_id = ?',
-    [req.user.id],
-    (err, row) => {
-      if (err) {
-        console.error('Usage query error:', err);
-        fs.unlink(req.file.path, () => {});
-        return res.status(500).json({ error: 'Server error' });
-      }
-
-      const currentlyUsed = row ? row.used : 0;
-      const projected = currentlyUsed + newFileSize;
-
-      if (projected > QUOTA_BYTES) {
-        fs.unlink(req.file.path, () => {});
-        return res.status(400).json({ error: 'Storage quota exceeded (1 GB limit)' });
-      }
-
-      const id = path.basename(req.file.filename, path.extname(req.file.filename));
-      const shortOriginal = shrinkName10(req.file.originalname);
-
-      db.run(
-        `INSERT INTO files (id, filename, original_name, size, mime, created, user_id, views, expires)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-        [
-          id,
-          req.file.filename,
-          shortOriginal,
-          req.file.size,
-          req.file.mimetype,
-          Date.now(),
-          req.user.id,
-          expiresAt
-        ],
-        err2 => {
-          if (err2) {
-            console.error('File DB error:', err2);
-            fs.unlink(req.file.path, () => {});
-            return res.status(500).json({ error: 'DB save error' });
-          }
-          // Share frame URL
-          res.json({ url: `${req.protocol}://${req.get('host')}/view/file/${id}` });
+        if (ext === '.png') {
+          pipeline = pipeline.png();
+          req.file.mimetype = 'image/png';
+        } else if (ext === '.webp') {
+          pipeline = pipeline.webp();
+          req.file.mimetype = 'image/webp';
+        } else if (ext === '.avif') {
+          pipeline = pipeline.avif();
+          req.file.mimetype = 'image/avif';
+        } else {
+          // jpg / jpeg / other -> jpeg
+          pipeline = pipeline.jpeg();
+          req.file.mimetype = 'image/jpeg';
         }
-      );
+
+        const buffer = await pipeline.toBuffer();
+        fs.writeFileSync(req.file.path, buffer);
+      } catch (imgErr) {
+        console.error('Sharp processing error (continuing with original file):', imgErr);
+      }
     }
-  );
+
+    const stat = fs.statSync(req.file.path);
+    const newFileSize = stat.size;
+    const expiryCode = req.body && req.body.expiry;
+    const expiresAt = computeExpiry(expiryCode);
+
+    // Enforce quota AFTER any re-encoding
+    db.get(
+      'SELECT IFNULL(SUM(size),0) AS used FROM files WHERE user_id = ?',
+      [req.user.id],
+      (err, row) => {
+        if (err) {
+          console.error('Usage query error:', err);
+          fs.unlink(req.file.path, () => {});
+          return res.status(500).json({ error: 'Server error' });
+        }
+
+        const currentlyUsed = row ? row.used : 0;
+        const projected = currentlyUsed + newFileSize;
+
+        if (projected > QUOTA_BYTES) {
+          fs.unlink(req.file.path, () => {});
+          return res.status(400).json({ error: 'Storage quota exceeded (1 GB limit)' });
+        }
+
+        const id = path.basename(req.file.filename, path.extname(req.file.filename));
+        const shortOriginal = shrinkName10(req.file.originalname);
+
+        db.run(
+          `INSERT INTO files (id, filename, original_name, size, mime, created, user_id, views, expires)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+          [
+            id,
+            req.file.filename,
+            shortOriginal,
+            newFileSize,
+            req.file.mimetype,
+            Date.now(),
+            req.user.id,
+            expiresAt
+          ],
+          err2 => {
+            if (err2) {
+              console.error('File DB error:', err2);
+              fs.unlink(req.file.path, () => {});
+              return res.status(500).json({ error: 'DB save error' });
+            }
+            res.json({ url: `${req.protocol}://${req.get('host')}/f/${id}` });
+          }
+        );
+      }
+    );
+  } catch (err) {
+    console.error('Upload handler error:', err);
+    if (req.file && req.file.path) {
+      fs.unlink(req.file.path, () => {});
+    }
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -526,68 +547,40 @@ app.post(
           console.error('Paste DB error:', err);
           return res.status(500).json({ error: 'DB error' });
         }
-        // Share frame URL
-        res.json({ url: `${req.protocol}://${req.get('host')}/view/paste/${id}` });
+        res.json({ url: `${req.protocol}://${req.get('host')}/p/${id}` });
       }
     );
   }
 );
 
 // ---------------------------------------------------------------------------
-// REPORTS (public create)
+// RAW FILE SERVE (for internal use / iframes if needed)
 // ---------------------------------------------------------------------------
 
-app.post('/api/report', (req, res) => {
-  const { type, shareId, reason } = req.body || {};
-  const t = String(type || '').toLowerCase();
-  const id = String(shareId || '').trim();
-  const why = String(reason || '').trim();
-
-  if (!isValidShareType(t)) {
-    return res.status(400).json({ error: 'Invalid type' });
-  }
-  if (!id) {
-    return res.status(400).json({ error: 'Missing shareId' });
-  }
-  if (!why || why.length < 5) {
-    return res.status(400).json({ error: 'Reason too short' });
-  }
-
+app.get('/raw/file/:id', (req, res) => {
+  const id = req.params.id;
   const now = Date.now();
-  const reporterUserId = req.user ? req.user.id : null;
-  const reporterIp = req.ip;
-  const table = t === 'file' ? 'files' : 'pastes';
 
   db.get(
-    `SELECT id FROM ${table} WHERE id = ? AND (expires IS NULL OR expires > ?)`,
+    'SELECT * FROM files WHERE id = ? AND (expires IS NULL OR expires > ?)',
     [id, now],
-    (err, row) => {
+    (err, file) => {
       if (err) {
-        console.error('Report share lookup error:', err);
-        return res.status(500).json({ error: 'DB error' });
+        console.error('Raw file query error:', err);
+        return res.status(500).send('Server error');
       }
-      if (!row) {
-        return res.status(404).json({ error: 'Share not found or expired' });
-      }
+      if (!file) return res.status(404).send('Not found');
 
-      db.run(
-        `INSERT INTO reports (type, share_id, reporter_user_id, reporter_ip, reason, created, status)
-         VALUES (?, ?, ?, ?, ?, ?, 'open')`,
-        [t, id, reporterUserId, reporterIp, why, now],
-        function (err2) {
-          if (err2) {
-            console.error('Report insert error:', err2);
-            return res.status(500).json({ error: 'DB error' });
-          }
-          res.json({ ok: true, reportId: this.lastID });
-        }
-      );
+      const fp = path.join(UPLOAD_DIR, file.filename);
+      if (!fs.existsSync(fp)) return res.status(404).send('Not found');
+
+      res.sendFile(fp);
     }
   );
 });
 
 // ---------------------------------------------------------------------------
-// VIEW FILE (raw)
+// VIEW FILE (with simple chrome and report link placeholder)
 // ---------------------------------------------------------------------------
 
 app.get('/f/:id', (req, res) => {
@@ -608,18 +601,66 @@ app.get('/f/:id', (req, res) => {
         if (err2) console.error('Update views error (file):', err2);
       });
 
-      const fp = path.join(UPLOAD_DIR, file.filename);
-      const ext = path.extname(fp).toLowerCase();
-      const imgs = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif'];
+      const title = e(file.original_name || 'File');
+      const fileUrl = `/raw/file/${encodeURIComponent(id)}`;
 
-      if (imgs.includes(ext)) res.sendFile(fp);
-      else res.download(fp, file.original_name);
+      // Simple frame chrome with header/footer and main viewer
+      res.send(`<!DOCTYPE html>
+<html data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <title>${title} - Pastebin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; font-family:system-ui,-apple-system,sans-serif; background:#020617; color:#e5e7eb; display:flex; flex-direction:column; min-height:100vh; }
+    header, footer { padding:0.75rem 1rem; background:#0f172a; border-bottom:1px solid #111827; display:flex; align-items:center; justify-content:space-between; }
+    footer { border-top:1px solid #111827; border-bottom:none; margin-top:auto; font-size:0.85rem; color:#9ca3af; }
+    a { color:#38bdf8; text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    .brand { font-weight:600; }
+    .main { flex:1 1 auto; background:#020617; display:flex; align-items:center; justify-content:center; padding:1rem; }
+    .frame { width:100%; height:100%; max-width:1200px; max-height:100vh; display:flex; align-items:center; justify-content:center; }
+    img { max-width:100%; max-height:100%; }
+    .download-link { margin-left:1rem; font-size:0.9rem; }
+    .button { border-radius:999px; border:1px solid #374151; padding:0.25rem 0.75rem; font-size:0.85rem; background:transparent; color:#e5e7eb; cursor:pointer; }
+    .button:hover { background:#111827; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <span class="brand"><a href="/">Pastebin</a></span>
+      <span style="margin-left:0.75rem; font-size:0.9rem; color:#9ca3af;">${title}</span>
+    </div>
+    <div>
+      <a href="${fileUrl}" class="download-link" download>Download</a>
+    </div>
+  </header>
+  <div class="main">
+    <div class="frame">
+      ${
+        ['.png','.jpg','.jpeg','.gif','.webp','.bmp','.svg','.avif']
+          .includes(path.extname(file.filename).toLowerCase())
+          ? `<img src="${fileUrl}" alt="${title}">`
+          : `<iframe src="${fileUrl}" style="width:100%;height:80vh;border:none;background:#020617;"></iframe>`
+      }
+    </div>
+  </div>
+  <footer>
+    <div>© ${new Date().getFullYear()} 3nd3r.net</div>
+    <div>
+      <!-- Placeholder for report; front-end can POST /api/report if you want to wire it -->
+      <span style="opacity:0.8;">Report: include this ID to admin &mdash; ${e(id)}</span>
+    </div>
+  </footer>
+</body>
+</html>`);
     }
   );
 });
 
 // ---------------------------------------------------------------------------
-// VIEW PASTE (raw viewer, no report UI)
+// VIEW PASTE
 // ---------------------------------------------------------------------------
 
 app.get('/p/:id', (req, res) => {
@@ -651,317 +692,40 @@ app.get('/p/:id', (req, res) => {
   <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <style>
-    body { font-family:system-ui,-apple-system,sans-serif; background:#020617; color:#e5e7eb; padding:2rem; margin:0; }
+    body { font-family:system-ui,-apple-system,sans-serif; background:#020617; color:#e5e7eb; margin:0; display:flex; flex-direction:column; min-height:100vh; }
+    header, footer { padding:0.75rem 1rem; background:#0f172a; border-bottom:1px solid #111827; display:flex; align-items:center; justify-content:space-between; }
+    footer { border-top:1px solid #111827; border-bottom:none; margin-top:auto; font-size:0.85rem; color:#9ca3af; }
+    a { color:#38bdf8; text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    .brand { font-weight:600; }
+    main { flex:1 1 auto; padding:2rem; }
     h1 { margin:0 0 1.5rem; font-size:1.4rem; }
     pre { background:#0f172a; padding:1.5rem; border-radius:1rem; overflow:auto; white-space:pre; }
-    a { color:#38bdf8; }
     @media (max-width:768px){
-      body { padding:1.5rem 1rem; }
+      main { padding:1.5rem 1rem; }
       pre { padding:1.2rem; }
     }
   </style>
 </head>
 <body>
-  <h1>${title}</h1>
-  <pre><code>${e(paste.content)}</code></pre>
-  <p style="margin-top:1.5rem"><a href="/">Home</a></p>
+  <header>
+    <div>
+      <span class="brand"><a href="/">Pastebin</a></span>
+    </div>
+    <div style="font-size:0.85rem;color:#9ca3af;">Paste ID: ${e(id)}</div>
+  </header>
+  <main>
+    <h1>${title}</h1>
+    <pre><code>${e(paste.content)}</code></pre>
+    <p style="margin-top:1.5rem"><a href="/">Home</a></p>
+  </main>
+  <footer>
+    <div>© ${new Date().getFullYear()} 3nd3r.net</div>
+    <div><span style="opacity:0.8;">Report this ID to admin: ${e(id)}</span></div>
+  </footer>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script>hljs.highlightAll();</script>
-</body>
-</html>`);
-    }
-  );
-});
-
-// ---------------------------------------------------------------------------
-// FRAME VIEWER /view/:type/:id
-// ---------------------------------------------------------------------------
-
-app.get('/view/:type/:id', (req, res) => {
-  const tRaw = req.params.type;
-  const t = tRaw === 'file' ? 'file' : 'paste';
-  const id = req.params.id;
-  const now = Date.now();
-
-  const table = t === 'file' ? 'files' : 'pastes';
-
-  db.get(
-    `SELECT * FROM ${table} WHERE id = ? AND (expires IS NULL OR expires > ?)`,
-    [id, now],
-    (err, row) => {
-      if (err) {
-        console.error('View wrapper lookup error:', err);
-        return res.status(500).send('Server error');
-      }
-      if (!row) return res.status(404).send('Not found');
-
-      const homeUrl = '/';
-      const rawUrl = t === 'file' ? `/f/${id}` : `/p/${id}`;
-      const title = t === 'file'
-        ? (row.original_name || `File ${id}`)
-        : (row.title || `Paste ${id}`);
-
-      res.send(`<!doctype html>
-<html lang="en" data-theme="dark">
-<head>
-  <meta charset="utf-8" />
-  <title>${e(title)} – Pastebin</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    html, body {
-      margin:0; padding:0;
-      height:100%; width:100%;
-      font-family:system-ui,-apple-system,sans-serif;
-      background:#020617;
-      color:#e5e7eb;
-    }
-    .frame-root {
-      display:flex;
-      flex-direction:column;
-      height:100vh;
-    }
-    .frame-top {
-      padding:0.6rem 1rem;
-      border-bottom:1px solid #1f2937;
-      background:#020617;
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      font-size:0.9rem;
-    }
-    .frame-brand {
-      display:flex;
-      align-items:center;
-      gap:0.5rem;
-      font-weight:600;
-    }
-    .frame-logo {
-      width:26px; height:26px;
-      border-radius:999px;
-      background:radial-gradient(circle at 30% 30%, #38bdf8, #0f172a);
-      display:grid; place-items:center;
-      font-size:0.8rem;
-    }
-    .frame-top a {
-      color:#38bdf8;
-      text-decoration:none;
-      font-size:0.85rem;
-    }
-    .frame-main {
-      flex:1 1 auto;
-      background:#020617;
-    }
-    .frame-main iframe {
-      border:none;
-      width:100%;
-      height:100%;
-    }
-    .frame-bottom {
-      padding:0.4rem 0.9rem;
-      border-top:1px solid #1f2937;
-      background:#020617;
-      font-size:0.8rem;
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      gap:0.5rem;
-      flex-wrap:wrap;
-    }
-    .frame-bottom-left {
-      display:flex;
-      gap:0.5rem;
-      align-items:center;
-      flex-wrap:wrap;
-    }
-    .btn-report {
-      padding:0.2rem 0.7rem;
-      border-radius:999px;
-      border:1px solid #f97373;
-      background:transparent;
-      color:#fecaca;
-      font-size:0.75rem;
-      cursor:pointer;
-    }
-    .btn-report:hover { background:rgba(248,113,113,0.1); }
-    .frame-link {
-      color:#64748b;
-      font-size:0.75rem;
-    }
-    .frame-link a { color:#9ca3af; text-decoration:none; }
-    .frame-link a:hover { text-decoration:underline; }
-
-    .report-popup {
-      position:fixed;
-      inset:0;
-      background:rgba(15,23,42,0.85);
-      display:none;
-      align-items:center;
-      justify-content:center;
-      z-index:50;
-    }
-    .report-dialog {
-      background:#020617;
-      border-radius:0.9rem;
-      padding:1rem 1.2rem;
-      border:1px solid #1f2937;
-      max-width:420px;
-      width:100%;
-      box-shadow:0 20px 40px rgba(0,0,0,.6);
-    }
-    .report-dialog h2 {
-      margin:0 0 0.5rem;
-      font-size:1rem;
-    }
-    .report-dialog textarea {
-      width:100%;
-      min-height:80px;
-      resize:vertical;
-      padding:0.5rem 0.6rem;
-      border-radius:0.6rem;
-      border:1px solid #374151;
-      background:#020617;
-      color:#e5e7eb;
-      font-size:0.85rem;
-      box-sizing:border-box;
-    }
-    .report-dialog-actions {
-      margin-top:0.7rem;
-      display:flex;
-      justify-content:flex-end;
-      gap:0.5rem;
-    }
-    .btn {
-      border-radius:999px;
-      padding:0.3rem 0.9rem;
-      font-size:0.8rem;
-      border:none;
-      cursor:pointer;
-    }
-    .btn-cancel {
-      background:transparent;
-      color:#9ca3af;
-      border:1px solid #374151;
-    }
-    .btn-submit {
-      background:#f97373;
-      color:white;
-    }
-    .report-status {
-      margin-top:0.4rem;
-      font-size:0.8rem;
-      min-height:1em;
-    }
-    @media (max-width:768px){
-      .frame-top, .frame-bottom {
-        padding:0.5rem 0.7rem;
-      }
-    }
-  </style>
-</head>
-<body>
-  <div class="frame-root">
-    <div class="frame-top">
-      <div class="frame-brand">
-        <div class="frame-logo">P</div>
-        <div>Pastebin</div>
-      </div>
-      <div>
-        <a href="${homeUrl}" target="_top">Go to homepage</a>
-      </div>
-    </div>
-
-    <div class="frame-main">
-      <iframe src="${rawUrl}" loading="lazy" referrerpolicy="no-referrer"></iframe>
-    </div>
-
-    <div class="frame-bottom">
-      <div class="frame-bottom-left">
-        <button class="btn-report" id="reportBtn">Report</button>
-        <span class="frame-link">
-          <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a>
-        </span>
-      </div>
-      <div>&copy; ${new Date().getFullYear()} 3nd3r.net</div>
-    </div>
-  </div>
-
-  <div class="report-popup" id="reportPopup">
-    <div class="report-dialog">
-      <h2>Report this ${t}</h2>
-      <p style="font-size:0.8rem;color:#9ca3af;margin:0 0 0.4rem;">
-        If this content is abusive or illegal, briefly describe the issue. Your IP may be logged.
-      </p>
-      <textarea id="reportReason" placeholder="Describe the problem (required, min 5 characters)"></textarea>
-      <div class="report-dialog-actions">
-        <button class="btn btn-cancel" id="reportCancel">Cancel</button>
-        <button class="btn btn-submit" id="reportSubmit">Submit</button>
-      </div>
-      <div class="report-status" id="reportStatus"></div>
-    </div>
-  </div>
-
-  <script>
-    (function () {
-      const popup = document.getElementById('reportPopup');
-      const btn = document.getElementById('reportBtn');
-      const cancel = document.getElementById('reportCancel');
-      const submit = document.getElementById('reportSubmit');
-      const reasonEl = document.getElementById('reportReason');
-      const statusEl = document.getElementById('reportStatus');
-
-      if (!popup || !btn || !cancel || !submit || !reasonEl || !statusEl) return;
-
-      btn.addEventListener('click', () => {
-        popup.style.display = 'flex';
-        statusEl.textContent = '';
-        reasonEl.value = '';
-      });
-
-      cancel.addEventListener('click', () => {
-        popup.style.display = 'none';
-      });
-
-      popup.addEventListener('click', (e) => {
-        if (e.target === popup) popup.style.display = 'none';
-      });
-
-      submit.addEventListener('click', () => {
-        const reason = reasonEl.value.trim();
-        if (reason.length < 5) {
-          statusEl.textContent = 'Please provide at least 5 characters.';
-          statusEl.style.color = '#fecaca';
-          return;
-        }
-        statusEl.textContent = 'Sending report…';
-        statusEl.style.color = '#9ca3af';
-
-        fetch('/api/report', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: '${t}',
-            shareId: '${e(id)}',
-            reason
-          })
-        }).then(r => r.json())
-        .then(data => {
-          if (data && data.ok) {
-            statusEl.textContent = 'Thank you. Your report has been submitted.';
-            statusEl.style.color = '#4ade80';
-          } else {
-            statusEl.textContent = 'Error submitting report: ' + (data && data.error || 'unknown');
-            statusEl.style.color = '#fecaca';
-          }
-        })
-        .catch(err => {
-          console.error('Report submit error:', err);
-          statusEl.textContent = 'Error submitting report.';
-          statusEl.style.color = '#fecaca';
-        });
-      });
-    })();
-  </script>
 </body>
 </html>`);
     }
@@ -1035,7 +799,7 @@ app.get('/api/usage', requireAuth, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE SHARE (user or admin) + delete associated reports
+// DELETE SHARE (user or admin)
 // ---------------------------------------------------------------------------
 
 app.delete('/api/share/:type/:id', requireAuth, (req, res) => {
@@ -1059,9 +823,6 @@ app.delete('/api/share/:type/:id', requireAuth, (req, res) => {
             console.error('File delete DB error:', err2);
             return res.status(500).json({ error: 'Server error' });
           }
-          db.run('DELETE FROM reports WHERE type = ? AND share_id = ?', ['file', id], err3 => {
-            if (err3) console.error('Report cleanup error (file):', err3);
-          });
           res.json({ ok: true });
         });
       });
@@ -1082,15 +843,86 @@ app.delete('/api/share/:type/:id', requireAuth, (req, res) => {
           console.error('Paste delete DB error:', err2);
           return res.status(500).json({ error: 'Server error' });
         }
-        db.run('DELETE FROM reports WHERE type = ? AND share_id = ?', ['paste', id], err3 => {
-          if (err3) console.error('Report cleanup error (paste):', err3);
-        });
         res.json({ ok: true });
       });
     });
   } else {
     res.status(400).json({ error: 'Invalid type' });
   }
+});
+
+// ---------------------------------------------------------------------------
+// REPORTING (backend only; UI can call this later)
+// ---------------------------------------------------------------------------
+
+// Create a report
+app.post('/api/report', (req, res) => {
+  const { targetType, targetId, reason } = req.body || {};
+  const cleanType = String(targetType || '').toLowerCase();
+  const cleanId = String(targetId || '').trim();
+  const cleanReason = String(reason || '').trim().slice(0, 1000);
+
+  if (!['file', 'paste'].includes(cleanType)) {
+    return res.status(400).json({ error: 'Invalid target type' });
+  }
+  if (!cleanId) {
+    return res.status(400).json({ error: 'Missing target id' });
+  }
+
+  const reporterUserId = req.user ? req.user.id : null;
+  const reporterIp = req.ip;
+  const created = Date.now();
+
+  db.run(
+    `INSERT INTO reports (target_type, target_id, reason, status, created, reporter_user_id, reporter_ip)
+     VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+    [cleanType, cleanId, cleanReason, created, reporterUserId, reporterIp],
+    function (err) {
+      if (err) {
+        console.error('Report insert error:', err);
+        return res.status(500).json({ error: 'DB error' });
+      }
+      res.json({ ok: true, id: this.lastID });
+    }
+  );
+});
+
+// Admin: list reports
+app.get('/api/admin/reports', requireAdmin, (req, res) => {
+  const status = String(req.query.status || 'open').toLowerCase();
+  const where = status === 'all' ? '' : 'WHERE status = ?';
+  const params = status === 'all' ? [] : ['open'];
+
+  db.all(
+    `SELECT * FROM reports ${where} ORDER BY created DESC LIMIT 500`,
+    params,
+    (err, rows) => {
+      if (err) {
+        console.error('Admin reports list error:', err);
+        return res.status(500).json({ error: 'DB error' });
+      }
+      res.json(rows);
+    }
+  );
+});
+
+// Admin: resolve report
+app.post('/api/admin/report/:id/resolve', requireAdmin, (req, res) => {
+  const id = Number(req.params.id || 0);
+  if (!id) return res.status(400).json({ error: 'Invalid report id' });
+
+  db.run(
+    'UPDATE reports SET status = ? WHERE id = ?',
+    ['resolved', id],
+    function (err) {
+      if (err) {
+        console.error('Admin resolve report error:', err);
+        return res.status(500).json({ error: 'DB error' });
+      }
+      if (this.changes === 0) return res.status(404).json({ error: 'Report not found' });
+      res.json({ ok: true });
+    }
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1121,19 +953,28 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
         }
         out.totalPastes = row3.totalPastes;
 
-        db.get('SELECT COUNT(*) AS blockedCount FROM blocked_ips', [], (err4, row4) => {
+        db.get("SELECT COUNT(*) AS blockedCount FROM blocked_ips", [], (err4, row4) => {
           if (err4) {
             console.error('Admin stats blocked error:', err4);
             return res.status(500).json({ error: 'DB error' });
           }
           out.blockedIps = row4.blockedCount;
-          res.json(out);
+
+          db.get("SELECT COUNT(*) AS openReports FROM reports WHERE status = 'open'", [], (err5, row5) => {
+            if (err5) {
+              console.error('Admin stats reports error:', err5);
+              return res.status(500).json({ error: 'DB error' });
+            }
+            out.openReports = row5.openReports;
+            res.json(out);
+          });
         });
       });
     });
   });
 });
 
+// Existing user search (filtered)
 app.get('/api/admin/users', requireAdmin, (req, res) => {
   const q = String(req.query.q || '').trim().toLowerCase();
   const like = `%${q}%`;
@@ -1144,6 +985,21 @@ app.get('/api/admin/users', requireAdmin, (req, res) => {
     (err, rows) => {
       if (err) {
         console.error('Admin users search error:', err);
+        return res.status(500).json({ error: 'DB error' });
+      }
+      res.json(rows);
+    }
+  );
+});
+
+// NEW: list all users (for admin panel "all registered users")
+app.get('/api/admin/users-all', requireAdmin, (req, res) => {
+  db.all(
+    'SELECT id, email, created, role, is_banned FROM users ORDER BY created DESC',
+    [],
+    (err, rows) => {
+      if (err) {
+        console.error('Admin users-all error:', err);
         return res.status(500).json({ error: 'DB error' });
       }
       res.json(rows);
@@ -1229,7 +1085,11 @@ app.get('/api/admin/share/:id', requireAdmin, (req, res) => {
   const id = req.params.id;
 
   db.get(
-    'SELECT id, original_name AS title, size, mime, created, user_id, views, expires FROM files WHERE id = ?',
+    `SELECT files.id, files.original_name AS title, files.size, files.mime, files.created, files.user_id,
+            files.views, files.expires, users.email AS user_email
+     FROM files
+     LEFT JOIN users ON users.id = files.user_id
+     WHERE files.id = ?`,
     [id],
     (err, file) => {
       if (err) {
@@ -1239,7 +1099,11 @@ app.get('/api/admin/share/:id', requireAdmin, (req, res) => {
       if (file) return res.json({ type: 'file', share: file });
 
       db.get(
-        'SELECT id, title, created, user_id, views, expires FROM pastes WHERE id = ?',
+        `SELECT pastes.id, pastes.title, pastes.created, pastes.user_id,
+                pastes.views, pastes.expires, users.email AS user_email
+         FROM pastes
+         LEFT JOIN users ON users.id = pastes.user_id
+         WHERE pastes.id = ?`,
         [id],
         (err2, paste) => {
           if (err2) {
@@ -1295,77 +1159,6 @@ app.delete('/api/admin/blocked-ips/:ip', requireAdmin, (req, res) => {
       if (err) {
         console.error('Admin delete blocked IP error:', err);
         return res.status(500).json({ error: 'DB error' });
-      }
-      res.json({ ok: true });
-    }
-  );
-});
-
-// ---------------------------------------------------------------------------
-// ADMIN: REPORTS
-// ---------------------------------------------------------------------------
-
-app.get('/api/admin/reports', requireAdmin, (req, res) => {
-  const status = String(req.query.status || '').trim().toLowerCase();
-  let sql = 'SELECT * FROM reports';
-  const params = [];
-
-  if (status && status !== 'all') {
-    if (!isValidReportStatus(status)) {
-      return res.status(400).json({ error: 'Invalid status filter' });
-    }
-    sql += ' WHERE status = ?';
-    params.push(status);
-  }
-
-  sql += ' ORDER BY created DESC LIMIT 500';
-
-  db.all(sql, params, (err, rows) => {
-    if (err) {
-      console.error('Admin reports list error:', err);
-      return res.status(500).json({ error: 'DB error' });
-    }
-    res.json(rows || []);
-  });
-});
-
-app.post('/api/admin/reports/:id/update', requireAdmin, (req, res) => {
-  const reportId = req.params.id;
-  const { status, adminNote } = req.body || {};
-
-  const fields = [];
-  const params = [];
-
-  if (typeof status !== 'undefined') {
-    const s = String(status || '').toLowerCase();
-    if (!isValidReportStatus(s)) {
-      return res.status(400).json({ error: 'Invalid status' });
-    }
-    fields.push('status = ?');
-    params.push(s);
-  }
-
-  if (typeof adminNote !== 'undefined') {
-    fields.push('admin_note = ?');
-    params.push(String(adminNote || ''));
-  }
-
-  if (!fields.length) {
-    return res.status(400).json({ error: 'No fields to update' });
-  }
-
-  params.push(reportId);
-
-  db.run(
-    `UPDATE reports SET ${fields.join(', ')} WHERE id = ?`,
-    params,
-    function (err) {
-      if (err) {
-        console.error('Admin report update error:', err);
-        return res.status(500).json({ error: 'DB error' });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Report not found' });
       }
       res.json({ ok: true });
     }
