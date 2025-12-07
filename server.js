@@ -25,7 +25,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const QUOTA_BYTES = 1024 * 1024 * 1024;
 
 // Owner (hard admin)
-const OWNER_EMAIL = 'lord3nd3r@gmail.com';
+const OWNER_EMAIL = 'admin@email.address';
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
