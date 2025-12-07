@@ -509,7 +509,7 @@
   </div>
 
   <footer>
-    &copy; 2026 3nd3r.net
+    &copy; 2025-2026 3nd3r.net
   </footer>
 
   <script>
@@ -702,7 +702,7 @@
               <tbody>
                 ${list.map(s => {
                   const type = s.type === 'paste' ? 'paste' : 'file';
-                  const href = `/view/${type}/${encodeURIComponent(s.id)}`;
+                  const href = `/${type === 'paste' ? 'p' : 'f'}/${encodeURIComponent(s.id)}`;
                   const views = typeof s.views === 'number' ? s.views : 0;
                   const sizeLabel = type === 'file' ? formatBytes(s.size || 0) : '—';
                   let expiresLabel = '<span class="never">Never</span>';
@@ -744,7 +744,7 @@
           rows.forEach(row => {
             const id = row.getAttribute('data-id');
             const type = row.getAttribute('data-type');
-            const href = `/view/${type}/${id}`;
+            const href = `/${type === 'paste' ? 'p' : 'f'}/${id}`;
             const fullUrl = location.origin + href;
 
             const copyBtn = row.querySelector('.dash-copy');
@@ -836,29 +836,14 @@
           </div>
 
           <section style="border:1px solid var(--border);border-radius:1rem;padding:1rem;margin-top:1.5rem;">
-            <h2 style="margin-bottom:0.8rem;font-size:1.05rem;">User Search</h2>
+            <h2 style="margin-bottom:0.8rem;font-size:1.05rem;">User Search / All Users</h2>
             <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.6rem;flex-wrap:wrap;">
               <input id="adminUserQuery" placeholder="Search by email" style="flex:1;min-width:180px;padding:0.4rem 0.6rem;border-radius:0.6rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);">
               <button id="adminUserSearchBtn" class="btn btn-sm">Search</button>
+              <button id="adminUserListAllBtn" class="btn btn-sm btn-outline">List all users</button>
             </div>
             <div id="adminUserResults" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:0.8rem;padding:0.5rem;font-size:0.9rem;"></div>
             <div id="adminUserDetail" style="margin-top:1rem;font-size:0.9rem;"></div>
-          </section>
-
-          <section style="border:1px solid var(--border);border-radius:1rem;padding:1rem;margin-top:1.5rem;">
-            <h2 style="margin-bottom:0.8rem;font-size:1.05rem;">Reports</h2>
-            <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.6rem;flex-wrap:wrap;">
-              <label for="adminReportsStatus" style="font-size:0.85rem;">Status:</label>
-              <select id="adminReportsStatus" style="padding:0.25rem 0.5rem;border-radius:0.5rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);">
-                <option value="open">Open</option>
-                <option value="reviewed">Reviewed</option>
-                <option value="dismissed">Dismissed</option>
-                <option value="all">All</option>
-              </select>
-              <button id="adminReportsRefreshBtn" class="btn btn-sm">Refresh</button>
-            </div>
-            <div id="adminReportsList" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:0.8rem;padding:0.5rem;font-size:0.85rem;"></div>
-            <div id="adminReportsDetail" style="margin-top:1rem;font-size:0.9rem;"></div>
           </section>
 
           <section style="border:1px solid var(--border);border-radius:1rem;padding:1rem;margin-top:1.5rem;">
@@ -890,9 +875,8 @@
           guardEl.textContent = 'Signed in as ' + (me.email || '') + ' — Admin';
           adminContent.style.display = 'block';
           setupAdminHandlers();
-          window.loadAdminStats();
-          window.loadBlockedIps();
-          window.loadReports && window.loadReports();
+          loadAdminStats();
+          loadBlockedIps();
         })
         .catch(err => {
           console.error('Error verifying admin:', err);
@@ -907,6 +891,7 @@
       const statsEl = document.getElementById('adminStats');
       const userQuery = document.getElementById('adminUserQuery');
       const userSearchBtn = document.getElementById('adminUserSearchBtn');
+      const userListAllBtn = document.getElementById('adminUserListAllBtn');
       const userResultsEl = document.getElementById('adminUserResults');
       const userDetailEl = document.getElementById('adminUserDetail');
 
@@ -919,14 +904,56 @@
       const addIpBtn = document.getElementById('adminAddIpBtn');
       const ipList = document.getElementById('adminIpList');
 
-      const reportsStatus = document.getElementById('adminReportsStatus');
-      const reportsRefreshBtn = document.getElementById('adminReportsRefreshBtn');
-      const reportsListEl = document.getElementById('adminReportsList');
-      const reportsDetailEl = document.getElementById('adminReportsDetail');
-
-      let currentReports = [];
-
       // User search
+      function renderUsersTable(list, labelPrefix) {
+        if (!Array.isArray(list) || !list.length) {
+          userResultsEl.innerHTML = '<div style="color:var(--text-muted);">No users found.</div>';
+          return;
+        }
+
+        const label = labelPrefix
+          ? `<div style="margin-bottom:0.3rem;font-size:0.8rem;color:var(--text-muted);">${labelPrefix} (${list.length})</div>`
+          : '';
+
+        userResultsEl.innerHTML = label + `
+          <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+            <thead>
+              <tr>
+                <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">ID</th>
+                <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Email</th>
+                <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Role</th>
+                <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Banned</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${list.map(u => {
+                const pillClass =
+                  u.is_banned ? 'pill pill-banned' :
+                  (u.role === 'admin' ? 'pill pill-admin' :
+                   (u.role === 'mod' ? 'pill pill-mod' : 'pill'));
+                const bannedText = u.is_banned ? 'Yes' : 'No';
+                return `
+                  <tr data-user-id="${u.id}" class="admin-user-row" style="cursor:pointer;">
+                    <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${u.id}</td>
+                    <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${escapeHtml(u.email)}</td>
+                    <td style="padding:0.3rem;border-bottom:1px solid var(--border);">
+                      <span class="${pillClass}">${escapeHtml(u.role || 'user')}</span>
+                    </td>
+                    <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${bannedText}</td>
+                  </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
+
+        userResultsEl.querySelectorAll('.admin-user-row').forEach(row => {
+          row.addEventListener('click', () => {
+            const userId = row.getAttribute('data-user-id');
+            showUserDetail(userId);
+          });
+        });
+      }
+
       function doUserSearch() {
         const q = userQuery.value.trim();
         if (!q) {
@@ -939,58 +966,29 @@
 
         fetch('/api/admin/users?q=' + encodeURIComponent(q))
           .then(r => r.json())
-          .then(list => {
-            if (!Array.isArray(list) || !list.length) {
-              userResultsEl.innerHTML = '<div style="color:var(--text-muted);">No users found.</div>';
-              return;
-            }
-
-            userResultsEl.innerHTML = `
-              <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
-                <thead>
-                  <tr>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">ID</th>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Email</th>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Role</th>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Banned</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${list.map(u => {
-                    const pillClass =
-                      u.is_banned ? 'pill pill-banned' :
-                      (u.role === 'admin' ? 'pill pill-admin' :
-                       (u.role === 'mod' ? 'pill pill-mod' : 'pill'));
-                    const bannedText = u.is_banned ? 'Yes' : 'No';
-                    return `
-                      <tr data-user-id="${u.id}" class="admin-user-row" style="cursor:pointer;">
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${u.id}</td>
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${escapeHtml(u.email)}</td>
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">
-                          <span class="${pillClass}">${escapeHtml(u.role || 'user')}</span>
-                        </td>
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${bannedText}</td>
-                      </tr>`;
-                  }).join('')}
-                </tbody>
-              </table>
-            `;
-
-            userResultsEl.querySelectorAll('.admin-user-row').forEach(row => {
-              row.addEventListener('click', () => {
-                const userId = row.getAttribute('data-user-id');
-                showUserDetail(userId);
-              });
-            });
-          })
+          .then(list => renderUsersTable(list, 'Search results'))
           .catch(err => {
             console.error('Admin user search error:', err);
             userResultsEl.innerHTML = '<div style="color:var(--danger);">Error searching users.</div>';
           });
       }
 
+      function doUserListAll() {
+        userResultsEl.textContent = 'Loading all users…';
+        userDetailEl.innerHTML = '';
+
+        fetch('/api/admin/users-all')
+          .then(r => r.json())
+          .then(list => renderUsersTable(list, 'All registered users'))
+          .catch(err => {
+            console.error('Admin users-all error:', err);
+            userResultsEl.innerHTML = '<div style="color:var(--danger);">Error loading users.</div>';
+          });
+      }
+
       userSearchBtn.addEventListener('click', doUserSearch);
       userQuery.addEventListener('keydown', e => { if (e.key === 'Enter') doUserSearch(); });
+      userListAllBtn.addEventListener('click', doUserListAll);
 
       function showUserDetail(userId) {
         userDetailEl.innerHTML = 'Loading user detail…';
@@ -1047,7 +1045,7 @@
                 <tbody>
                   ${shares.map(s => {
                     const type = s.type === 'paste' ? 'paste' : 'file';
-                    const href = `/view/${type}/${encodeURIComponent(s.id)}`;
+                    const href = `/${type === 'paste' ? 'p' : 'f'}/${encodeURIComponent(s.id)}`;
                     const title = s.title || (type === 'file' ? 'file' : 'paste');
                     return `
                       <tr data-share-id="${s.id}" data-share-type="${type}">
@@ -1171,15 +1169,17 @@
             }
             const type = data.type;
             const s = data.share;
-            const frameHref = `/view/${type}/${encodeURIComponent(s.id)}`;
-            const rawHref = `/${type === 'paste' ? 'p' : 'f'}/${encodeURIComponent(s.id)}`;
+            const href = `/${type === 'paste' ? 'p' : 'f'}/${encodeURIComponent(s.id)}`;
             const info = [
               `<strong>Type:</strong> ${escapeHtml(type)}`,
               `<strong>ID:</strong> ${escapeHtml(s.id)}`,
               `<strong>User ID:</strong> ${escapeHtml(String(s.user_id))}`,
-              `<strong>Created:</strong> ${new Date(s.created).toLocaleString()}`,
-              `<strong>Views:</strong> ${s.views || 0}`,
             ];
+            if (s.user_email) {
+              info.push(`<strong>User email:</strong> ${escapeHtml(s.user_email)}`);
+            }
+            info.push(`<strong>Created:</strong> ${new Date(s.created).toLocaleString()}`);
+            info.push(`<strong>Views:</strong> ${s.views || 0}`);
             if (type === 'file') {
               info.push(`<strong>Size:</strong> ${formatBytes(s.size || 0)}`);
               info.push(`<strong>MIME:</strong> ${escapeHtml(s.mime || '')}`);
@@ -1189,9 +1189,7 @@
                 ${info.join('<br>')}
               </div>
               <div style="margin-bottom:0.6rem;">
-                <a href="${frameHref}" target="_blank" rel="noopener">Open (frame)</a>
-                &nbsp;·&nbsp;
-                <a href="${rawHref}" target="_blank" rel="noopener">Open raw</a>
+                <a href="${href}" target="_blank" rel="noopener">Open</a>
               </div>
               <button id="adminDeleteShareDirectBtn" class="btn btn-sm btn-danger">Delete share</button>
             `;
@@ -1319,6 +1317,7 @@
               <div><strong>Total files:</strong> ${stats.totalFiles} (${totalSize})</div>
               <div><strong>Total pastes:</strong> ${stats.totalPastes}</div>
               <div><strong>Blocked IPs:</strong> ${stats.blockedIps}</div>
+              <div><strong>Open reports:</strong> ${stats.openReports || 0}</div>
             `;
           })
           .catch(err => {
@@ -1328,143 +1327,6 @@
       }
 
       window.loadAdminStats = loadAdminStats;
-
-      // Reports
-      function loadReports() {
-        reportsListEl.textContent = 'Loading…';
-        const status = reportsStatus.value || 'open';
-        const qs = status && status !== 'all' ? ('?status=' + encodeURIComponent(status)) : '';
-        fetch('/api/admin/reports' + qs)
-          .then(r => r.json())
-          .then(list => {
-            if (!Array.isArray(list) || !list.length) {
-              reportsListEl.innerHTML = '<div style="color:var(--text-muted);">No reports.</div>';
-              currentReports = [];
-              reportsDetailEl.innerHTML = '';
-              return;
-            }
-            currentReports = list;
-
-            reportsListEl.innerHTML = `
-              <table style="width:100%;border-collapse:collapse;">
-                <thead>
-                  <tr>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">ID</th>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Type</th>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Share</th>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Status</th>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Created</th>
-                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${list.map(r => {
-                    const created = new Date(r.created).toLocaleString();
-                    const reasonShort = (r.reason || '').length > 80
-                      ? escapeHtml(r.reason.slice(0, 77)) + '…'
-                      : escapeHtml(r.reason || '');
-                    return `
-                      <tr class="admin-report-row" data-report-id="${r.id}" style="cursor:pointer;">
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${r.id}</td>
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${escapeHtml(r.type)}</td>
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${escapeHtml(r.share_id)}</td>
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${escapeHtml(r.status || 'open')}</td>
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${created}</td>
-                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);max-width:260px;">${reasonShort}</td>
-                      </tr>`;
-                  }).join('')}
-                </tbody>
-              </table>
-            `;
-
-            reportsListEl.querySelectorAll('.admin-report-row').forEach(row => {
-              row.addEventListener('click', () => {
-                const id = Number(row.getAttribute('data-report-id'));
-                showReportDetail(id);
-              });
-            });
-          })
-          .catch(err => {
-            console.error('Admin reports list error:', err);
-            reportsListEl.innerHTML = '<div style="color:var(--danger);">Error loading reports.</div>';
-          });
-      }
-
-      function showReportDetail(reportId) {
-        const r = currentReports.find(x => Number(x.id) === Number(reportId));
-        if (!r) {
-          reportsDetailEl.innerHTML = '<div style="color:var(--text-muted);">Report not found in current list.</div>';
-          return;
-        }
-
-        const created = new Date(r.created).toLocaleString();
-        const shareFrameHref = `/view/${r.type}/${encodeURIComponent(r.share_id)}`;
-        const shareRawHref = `/${r.type === 'paste' ? 'p' : 'f'}/${encodeURIComponent(r.share_id)}`;
-
-        reportsDetailEl.innerHTML = `
-          <div style="margin-bottom:0.5rem;"><strong>Report #${r.id}</strong></div>
-          <div style="margin-bottom:0.4rem;"><strong>Type:</strong> ${escapeHtml(r.type)}</div>
-          <div style="margin-bottom:0.4rem;"><strong>Share ID:</strong> ${escapeHtml(r.share_id)}</div>
-          <div style="margin-bottom:0.4rem;"><strong>Created:</strong> ${created}</div>
-          <div style="margin-bottom:0.4rem;"><strong>Reporter user ID:</strong> ${r.reporter_user_id != null ? escapeHtml(String(r.reporter_user_id)) : '(anonymous)'}</div>
-          <div style="margin-bottom:0.4rem;"><strong>Reporter IP:</strong> ${escapeHtml(r.reporter_ip || '')}</div>
-          <div style="margin-bottom:0.4rem;"><strong>Status:</strong> ${escapeHtml(r.status || 'open')}</div>
-          <div style="margin-bottom:0.4rem;"><strong>Reason:</strong><br>
-            <pre style="margin-top:0.25rem;font-size:0.8rem;">${escapeHtml(r.reason || '')}</pre>
-          </div>
-          <div style="margin-bottom:0.5rem;">
-            <a href="${shareFrameHref}" target="_blank" rel="noopener">Open share (frame)</a>
-            &nbsp;·&nbsp;
-            <a href="${shareRawHref}" target="_blank" rel="noopener">Open raw</a>
-          </div>
-          <div style="margin-top:0.5rem;margin-bottom:0.3rem;">
-            <label for="adminReportStatusSelect" style="font-size:0.85rem;">Update status:</label>
-            <select id="adminReportStatusSelect" style="margin-left:0.4rem;padding:0.25rem 0.5rem;border-radius:0.5rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);">
-              <option value="open"${(r.status || 'open') === 'open' ? ' selected' : ''}>open</option>
-              <option value="reviewed"${r.status === 'reviewed' ? ' selected' : ''}>reviewed</option>
-              <option value="dismissed"${r.status === 'dismissed' ? ' selected' : ''}>dismissed</option>
-            </select>
-          </div>
-          <div style="margin-bottom:0.5rem;">
-            <div style="font-size:0.85rem;margin-bottom:0.2rem;">Admin note:</div>
-            <textarea id="adminReportNoteInput" style="width:100%;min-height:70px;resize:vertical;padding:0.4rem 0.5rem;border-radius:0.5rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);font-size:0.85rem;">${escapeHtml(r.admin_note || '')}</textarea>
-          </div>
-          <button id="adminReportSaveBtn" class="btn btn-sm">Save</button>
-        `;
-
-        const statusSelect = document.getElementById('adminReportStatusSelect');
-        const noteInput = document.getElementById('adminReportNoteInput');
-        const saveBtn = document.getElementById('adminReportSaveBtn');
-
-        if (saveBtn) {
-          saveBtn.addEventListener('click', () => {
-            const newStatus = statusSelect.value;
-            const newNote = noteInput.value;
-
-            fetch('/api/admin/reports/' + encodeURIComponent(String(r.id)) + '/update', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ status: newStatus, adminNote: newNote })
-            }).then(resp => resp.json())
-              .then(data => {
-                if (data && data.ok) {
-                  alert('Report updated.');
-                  loadReports();
-                } else {
-                  alert('Error updating report: ' + (data && data.error || 'unknown'));
-                }
-              })
-              .catch(err => {
-                console.error('Admin report update error:', err);
-                alert('Error updating report.');
-              });
-          });
-        }
-      }
-
-      reportsRefreshBtn.addEventListener('click', loadReports);
-      reportsStatus.addEventListener('change', loadReports);
-      window.loadReports = loadReports;
     }
 
     function loadAdminStats() {}
