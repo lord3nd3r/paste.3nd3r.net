@@ -1,5 +1,5 @@
 // ==============================
-//  Pastebin – Full Server Code (with expiry support)
+//  Pastebin – Full Server Code (with fixes & short names)
 // ==============================
 
 const express = require('express');
@@ -69,7 +69,7 @@ db.serialize(() => {
       expires INTEGER
   )`);
 
-  // Patch older DBs that don't have views/expiry columns yet
+  // Legacy migrations: safe no-ops on fresh DBs
   db.run(`ALTER TABLE files ADD COLUMN views INTEGER DEFAULT 0`, err => {
     if (err && !/duplicate column/i.test(err.message || '')) {
       console.error('Error adding files.views column:', err);
@@ -94,13 +94,39 @@ db.serialize(() => {
 });
 
 // ---------------------------------------------------------------------------
-// MIDDLEWARE
+// HELPERS
+// ---------------------------------------------------------------------------
+
+// Ensure a name (with extension if present) is <= 10 chars total
+function shrinkName10(name) {
+  if (!name) return 'file';
+  name = path.basename(String(name));
+  const ext = path.extname(name);
+  const base = path.basename(name, ext);
+  const maxBaseLen = Math.max(1, 10 - ext.length);
+  return base.slice(0, maxBaseLen) + ext;
+}
+
+// HTML escape
+function e(str) {
+  return String(str).replace(/[&<>"']/g, c => ({
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    "\"":"&quot;",
+    "'":"&#39;"
+  }[c]));
+}
+
+// ---------------------------------------------------------------------------
+// MULTER STORAGE (10-char file IDs)
 // ---------------------------------------------------------------------------
 
 const storage = multer.diskStorage({
   destination: UPLOAD_DIR,
   filename: (req, file, cb) => {
-    const id = crypto.randomBytes(8).toString('hex');
+    // 5 bytes → 10 hex chars
+    const id = crypto.randomBytes(5).toString('hex');
     const ext = path.extname(file.originalname);
     cb(null, id + ext);
   }
@@ -108,13 +134,17 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+// ---------------------------------------------------------------------------
+// MIDDLEWARE
+// ---------------------------------------------------------------------------
+
 app.use(cookieParser());
 app.use(express.json());
 app.use(express.static(PUBLIC_DIR));
 app.use('/uploads', express.static(UPLOAD_DIR));
 
 // ---------------------------------------------------------------------------
-// EXPIRY HELPER
+// EXPIRY HELPER & CLEANUP
 // ---------------------------------------------------------------------------
 
 function computeExpiry(expiresCode) {
@@ -134,11 +164,45 @@ function computeExpiry(expiresCode) {
   }
 }
 
+function cleanupExpired() {
+  const now = Date.now();
+
+  // Expired sessions
+  db.run("DELETE FROM sessions WHERE expires IS NOT NULL AND expires <= ?", [now], err => {
+    if (err) console.error('Error cleaning sessions:', err);
+  });
+
+  // Expired files (DB + disk)
+  db.all("SELECT filename FROM files WHERE expires IS NOT NULL AND expires <= ?", [now], (err, rows) => {
+    if (err) {
+      console.error('Error selecting expired files:', err);
+      return;
+    }
+    rows.forEach(row => {
+      fs.unlink(path.join(UPLOAD_DIR, row.filename), unlinkErr => {
+        if (unlinkErr && unlinkErr.code !== 'ENOENT') {
+          console.error('Error deleting expired file:', unlinkErr);
+        }
+      });
+    });
+    db.run("DELETE FROM files WHERE expires IS NOT NULL AND expires <= ?", [now], err2 => {
+      if (err2) console.error('Error deleting expired file rows:', err2);
+    });
+  });
+
+  // Expired pastes
+  db.run("DELETE FROM pastes WHERE expires IS NOT NULL AND expires <= ?", [now], err => {
+    if (err) console.error('Error deleting expired pastes:', err);
+  });
+}
+
+// Run cleanup every 6 hours
+setInterval(cleanupExpired, 6 * 60 * 60 * 1000);
+
 // ---------------------------------------------------------------------------
 // SESSION / AUTH MIDDLEWARE
 // ---------------------------------------------------------------------------
 
-// Load logged-in user via session cookie (respect session expiry)
 app.use((req, res, next) => {
   const sid = req.cookies.session_id;
   if (!sid) {
@@ -166,7 +230,6 @@ app.use((req, res, next) => {
         return next();
       }
 
-      // If session expired, clear it out and treat as logged out
       if (row.session_expires && row.session_expires <= now) {
         db.run('DELETE FROM sessions WHERE id = ?', [sid], err2 => {
           if (err2) console.error('Session cleanup error:', err2);
@@ -205,9 +268,11 @@ function createSession(userId, res, email) {
         return res.status(500).json({ error: "Session error" });
       }
 
+      const isProd = process.env.NODE_ENV === 'production';
+
       res.cookie("session_id", sid, {
         httpOnly: true,
-        secure: true,
+        secure: isProd,
         sameSite: "lax",
         maxAge: 90 * 86400 * 1000
       });
@@ -223,10 +288,10 @@ function createSession(userId, res, email) {
 
 app.post('/api/register', (req, res) => {
   const { email, password } = req.body || {};
-  const e = String(email || "").trim().toLowerCase();
+  const eMail = String(email || "").trim().toLowerCase();
   const p = String(password || "");
 
-  if (!e || !p) return res.status(400).json({ error: "Email and password required" });
+  if (!eMail || !p) return res.status(400).json({ error: "Email and password required" });
   if (p.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
 
   bcrypt.hash(p, 10, (err, hash) => {
@@ -237,7 +302,7 @@ app.post('/api/register', (req, res) => {
 
     db.run(
       "INSERT INTO users (email, password_hash, created) VALUES (?, ?, ?)",
-      [e, hash, Date.now()],
+      [eMail, hash, Date.now()],
       function (err2) {
         if (err2) {
           if (err2.message && err2.message.includes("UNIQUE")) {
@@ -247,19 +312,19 @@ app.post('/api/register', (req, res) => {
           return res.status(500).json({ error: "DB error" });
         }
 
-        createSession(this.lastID, res, e);
+        createSession(this.lastID, res, eMail);
       }
     );
   });
 });
 
 app.post('/api/login', (req, res) => {
-  const e = String(req.body.email || '').trim().toLowerCase();
+  const eMail = String(req.body.email || '').trim().toLowerCase();
   const p = String(req.body.password || '');
 
-  if (!e || !p) return res.status(400).json({ error: "Email and password required" });
+  if (!eMail || !p) return res.status(400).json({ error: "Email and password required" });
 
-  db.get("SELECT * FROM users WHERE email = ?", [e], (err, user) => {
+  db.get("SELECT * FROM users WHERE email = ?", [eMail], (err, user) => {
     if (err) {
       console.error('User lookup error:', err);
       return res.status(500).json({ error: "DB error" });
@@ -295,14 +360,14 @@ app.get('/api/me', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// UPLOAD FILE (with quota check + expiry)
+// UPLOAD FILE (quota check + expiry + short names)
 // ---------------------------------------------------------------------------
 
 app.post('/upload', requireAuth, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file" });
 
   const newFileSize = req.file.size;
-  const expiryCode = req.body && req.body.expiry; // '1h', '1d', '7d', '30d' or undefined
+  const expiryCode = req.body && req.body.expiry;
   const expiresAt = computeExpiry(expiryCode);
 
   db.get(
@@ -311,7 +376,6 @@ app.post('/upload', requireAuth, upload.single('file'), (req, res) => {
     (err, row) => {
       if (err) {
         console.error('Usage query error:', err);
-        // Clean up file
         fs.unlink(req.file.path, () => {});
         return res.status(500).json({ error: "Server error" });
       }
@@ -320,12 +384,12 @@ app.post('/upload', requireAuth, upload.single('file'), (req, res) => {
       const projected = currentlyUsed + newFileSize;
 
       if (projected > QUOTA_BYTES) {
-        // Over quota — delete the uploaded file
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({ error: "Storage quota exceeded (1 GB limit)" });
       }
 
       const id = path.basename(req.file.filename, path.extname(req.file.filename));
+      const shortOriginal = shrinkName10(req.file.originalname);
 
       db.run(
         `INSERT INTO files (id, filename, original_name, size, mime, created, user_id, views, expires)
@@ -333,7 +397,7 @@ app.post('/upload', requireAuth, upload.single('file'), (req, res) => {
         [
           id,
           req.file.filename,
-          req.file.originalname,
+          shortOriginal,
           req.file.size,
           req.file.mimetype,
           Date.now(),
@@ -354,7 +418,7 @@ app.post('/upload', requireAuth, upload.single('file'), (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// CREATE PASTE (clean title, not based on content) + expiry
+// CREATE PASTE (title + expiry)
 // ---------------------------------------------------------------------------
 
 app.post(
@@ -375,7 +439,7 @@ app.post(
 
     const title = `Paste ${ts}`;
 
-    const expiryCode = req.query && req.query.expiry; // from frontend query param
+    const expiryCode = req.query && req.query.expiry;
     const expiresAt = computeExpiry(expiryCode);
 
     db.run(
@@ -411,7 +475,6 @@ app.get('/f/:id', (req, res) => {
       }
       if (!file) return res.status(404).send("Not found");
 
-      // Increment views (fire-and-forget)
       db.run("UPDATE files SET views = views + 1 WHERE id = ?", [id], err2 => {
         if (err2) console.error('Update views error (file):', err2);
       });
@@ -444,7 +507,6 @@ app.get('/p/:id', (req, res) => {
       }
       if (!paste) return res.status(404).send("Not found");
 
-      // Increment views
       db.run("UPDATE pastes SET views = views + 1 WHERE id = ?", [id], err2 => {
         if (err2) console.error('Update views error (paste):', err2);
       });
@@ -484,7 +546,7 @@ app.get('/p/:id', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// USER DASHBOARD LISTING (includes views, size, expires; hides expired)
+// USER DASHBOARD LISTING (views, size, expires, hides expired)
 // ---------------------------------------------------------------------------
 
 app.get('/api/shares', requireAuth, (req, res) => {
@@ -520,13 +582,14 @@ app.get('/api/shares', requireAuth, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// USAGE STATS (quota, used, remaining, file count)
+// USAGE STATS (quota, used, remaining, file count) – non-expired only
 // ---------------------------------------------------------------------------
 
 app.get('/api/usage', requireAuth, (req, res) => {
+  const now = Date.now();
   db.get(
-    "SELECT COUNT(*) AS fileCount, IFNULL(SUM(size),0) AS totalSize FROM files WHERE user_id = ?",
-    [req.user.id],
+    "SELECT COUNT(*) AS fileCount, IFNULL(SUM(size),0) AS totalSize FROM files WHERE user_id = ? AND (expires IS NULL OR expires > ?)",
+    [req.user.id, now],
     (err, row) => {
       if (err) {
         console.error('Usage stats error:', err);
@@ -603,41 +666,37 @@ app.get('*', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// UTILITIES
+// HTTPS SERVER (Let’s Encrypt) with fallback
 // ---------------------------------------------------------------------------
 
-function e(str) {
-  return String(str).replace(/[&<>"']/g, c => ({
-    "&":"&amp;",
-    "<":"&lt;",
-    ">":"&gt;",
-    "\"":"&quot;",
-    "'":"&#39;"
-  }[c]));
-}
-
-// ---------------------------------------------------------------------------
-// HTTPS SERVER (Let’s Encrypt)
-// ---------------------------------------------------------------------------
-
-// CHANGE THIS 
 const domain = "paste.3nd3r.net";
 
-const httpsOptions = {
-  key: fs.readFileSync(`/etc/letsencrypt/live/${domain}/privkey.pem`),
-  cert: fs.readFileSync(`/etc/letsencrypt/live/${domain}/fullchain.pem`)
-};
+let httpsOptions = null;
+try {
+  httpsOptions = {
+    key: fs.readFileSync(`/etc/letsencrypt/live/${domain}/privkey.pem`),
+    cert: fs.readFileSync(`/etc/letsencrypt/live/${domain}/fullchain.pem`)
+  };
+} catch (err) {
+  console.warn('Could not load HTTPS certs, running HTTP-only:', err.message);
+}
 
-// Redirect HTTP → HTTPS
+// HTTP server – redirect to HTTPS if available, else serve app
 http.createServer((req, res) => {
-  const host = (req.headers.host || '').replace(/:\d+$/, "");
-  res.writeHead(301, { Location: `https://${host}${req.url}` });
-  res.end();
+  if (httpsOptions) {
+    const host = (req.headers.host || '').replace(/:\d+$/, "");
+    res.writeHead(301, { Location: `https://${host}${req.url}` });
+    res.end();
+  } else {
+    app(req, res);
+  }
 }).listen(HTTP_PORT, () => {
-  console.log(`HTTP redirect server on :${HTTP_PORT}`);
+  console.log(`HTTP server on :${HTTP_PORT} (redirecting to HTTPS if configured)`);
 });
 
 // HTTPS app server
-https.createServer(httpsOptions, app).listen(HTTPS_PORT, () => {
-  console.log(`Pastebin LIVE over HTTPS on :${HTTPS_PORT}`);
-});
+if (httpsOptions) {
+  https.createServer(httpsOptions, app).listen(HTTPS_PORT, () => {
+    console.log(`Pastebin LIVE over HTTPS on :${HTTPS_PORT}`);
+  });
+}
