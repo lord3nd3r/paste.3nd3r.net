@@ -1,5 +1,5 @@
 // ==============================
-//  Pastebin – Server (with admin & moderation)
+//  Pastebin – Server (admin, moderation, frame viewer & reports)
 // ==============================
 
 const express = require('express');
@@ -25,7 +25,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const QUOTA_BYTES = 1024 * 1024 * 1024;
 
 // Owner (hard admin)
-const OWNER_EMAIL = 'admin@email.address';
+const OWNER_EMAIL = 'lord3nd3r@gmail.com';
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -81,6 +81,18 @@ db.serialize(() => {
       created INTEGER
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT,
+      share_id TEXT,
+      reporter_user_id INTEGER,
+      reporter_ip TEXT,
+      reason TEXT,
+      created INTEGER,
+      status TEXT DEFAULT 'open',
+      admin_note TEXT
+  )`);
+
   // Legacy migrations if old DBs exist
   db.run(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`, err => {
     if (err && !/duplicate column/i.test(err.message || '')) {
@@ -115,6 +127,16 @@ db.serialize(() => {
   db.run(`ALTER TABLE pastes ADD COLUMN expires INTEGER`, err => {
     if (err && !/duplicate column/i.test(err.message || '')) {
       console.error('Error adding pastes.expires column:', err);
+    }
+  });
+  db.run(`ALTER TABLE reports ADD COLUMN status TEXT DEFAULT 'open'`, err => {
+    if (err && !/duplicate column/i.test(err.message || '')) {
+      console.error('Error adding reports.status column:', err);
+    }
+  });
+  db.run(`ALTER TABLE reports ADD COLUMN admin_note TEXT`, err => {
+    if (err && !/duplicate column/i.test(err.message || '')) {
+      console.error('Error adding reports.admin_note column:', err);
     }
   });
 });
@@ -190,6 +212,14 @@ function isAdmin(user) {
   if (user.email === OWNER_EMAIL) return true;
   if (user.role === 'admin' || user.role === 'mod') return true;
   return false;
+}
+
+function isValidShareType(t) {
+  return t === 'file' || t === 'paste';
+}
+
+function isValidReportStatus(s) {
+  return s === 'open' || s === 'reviewed' || s === 'dismissed';
 }
 
 // ---------------------------------------------------------------------------
@@ -454,7 +484,8 @@ app.post('/upload', requireAuth, upload.single('file'), (req, res) => {
             fs.unlink(req.file.path, () => {});
             return res.status(500).json({ error: 'DB save error' });
           }
-          res.json({ url: `${req.protocol}://${req.get('host')}/f/${id}` });
+          // Share frame URL
+          res.json({ url: `${req.protocol}://${req.get('host')}/view/file/${id}` });
         }
       );
     }
@@ -495,14 +526,68 @@ app.post(
           console.error('Paste DB error:', err);
           return res.status(500).json({ error: 'DB error' });
         }
-        res.json({ url: `${req.protocol}://${req.get('host')}/p/${id}` });
+        // Share frame URL
+        res.json({ url: `${req.protocol}://${req.get('host')}/view/paste/${id}` });
       }
     );
   }
 );
 
 // ---------------------------------------------------------------------------
-// VIEW FILE
+// REPORTS (public create)
+// ---------------------------------------------------------------------------
+
+app.post('/api/report', (req, res) => {
+  const { type, shareId, reason } = req.body || {};
+  const t = String(type || '').toLowerCase();
+  const id = String(shareId || '').trim();
+  const why = String(reason || '').trim();
+
+  if (!isValidShareType(t)) {
+    return res.status(400).json({ error: 'Invalid type' });
+  }
+  if (!id) {
+    return res.status(400).json({ error: 'Missing shareId' });
+  }
+  if (!why || why.length < 5) {
+    return res.status(400).json({ error: 'Reason too short' });
+  }
+
+  const now = Date.now();
+  const reporterUserId = req.user ? req.user.id : null;
+  const reporterIp = req.ip;
+  const table = t === 'file' ? 'files' : 'pastes';
+
+  db.get(
+    `SELECT id FROM ${table} WHERE id = ? AND (expires IS NULL OR expires > ?)`,
+    [id, now],
+    (err, row) => {
+      if (err) {
+        console.error('Report share lookup error:', err);
+        return res.status(500).json({ error: 'DB error' });
+      }
+      if (!row) {
+        return res.status(404).json({ error: 'Share not found or expired' });
+      }
+
+      db.run(
+        `INSERT INTO reports (type, share_id, reporter_user_id, reporter_ip, reason, created, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'open')`,
+        [t, id, reporterUserId, reporterIp, why, now],
+        function (err2) {
+          if (err2) {
+            console.error('Report insert error:', err2);
+            return res.status(500).json({ error: 'DB error' });
+          }
+          res.json({ ok: true, reportId: this.lastID });
+        }
+      );
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// VIEW FILE (raw)
 // ---------------------------------------------------------------------------
 
 app.get('/f/:id', (req, res) => {
@@ -534,7 +619,7 @@ app.get('/f/:id', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// VIEW PASTE
+// VIEW PASTE (raw viewer, no report UI)
 // ---------------------------------------------------------------------------
 
 app.get('/p/:id', (req, res) => {
@@ -583,6 +668,300 @@ app.get('/p/:id', (req, res) => {
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script>hljs.highlightAll();</script>
+</body>
+</html>`);
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// FRAME VIEWER /view/:type/:id
+// ---------------------------------------------------------------------------
+
+app.get('/view/:type/:id', (req, res) => {
+  const tRaw = req.params.type;
+  const t = tRaw === 'file' ? 'file' : 'paste';
+  const id = req.params.id;
+  const now = Date.now();
+
+  const table = t === 'file' ? 'files' : 'pastes';
+
+  db.get(
+    `SELECT * FROM ${table} WHERE id = ? AND (expires IS NULL OR expires > ?)`,
+    [id, now],
+    (err, row) => {
+      if (err) {
+        console.error('View wrapper lookup error:', err);
+        return res.status(500).send('Server error');
+      }
+      if (!row) return res.status(404).send('Not found');
+
+      const homeUrl = '/';
+      const rawUrl = t === 'file' ? `/f/${id}` : `/p/${id}`;
+      const title = t === 'file'
+        ? (row.original_name || `File ${id}`)
+        : (row.title || `Paste ${id}`);
+
+      res.send(`<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <title>${e(title)} – Pastebin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body {
+      margin:0; padding:0;
+      height:100%; width:100%;
+      font-family:system-ui,-apple-system,sans-serif;
+      background:#020617;
+      color:#e5e7eb;
+    }
+    .frame-root {
+      display:flex;
+      flex-direction:column;
+      height:100vh;
+    }
+    .frame-top {
+      padding:0.6rem 1rem;
+      border-bottom:1px solid #1f2937;
+      background:#020617;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      font-size:0.9rem;
+    }
+    .frame-brand {
+      display:flex;
+      align-items:center;
+      gap:0.5rem;
+      font-weight:600;
+    }
+    .frame-logo {
+      width:26px; height:26px;
+      border-radius:999px;
+      background:radial-gradient(circle at 30% 30%, #38bdf8, #0f172a);
+      display:grid; place-items:center;
+      font-size:0.8rem;
+    }
+    .frame-top a {
+      color:#38bdf8;
+      text-decoration:none;
+      font-size:0.85rem;
+    }
+    .frame-main {
+      flex:1 1 auto;
+      background:#020617;
+    }
+    .frame-main iframe {
+      border:none;
+      width:100%;
+      height:100%;
+    }
+    .frame-bottom {
+      padding:0.4rem 0.9rem;
+      border-top:1px solid #1f2937;
+      background:#020617;
+      font-size:0.8rem;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:0.5rem;
+      flex-wrap:wrap;
+    }
+    .frame-bottom-left {
+      display:flex;
+      gap:0.5rem;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+    .btn-report {
+      padding:0.2rem 0.7rem;
+      border-radius:999px;
+      border:1px solid #f97373;
+      background:transparent;
+      color:#fecaca;
+      font-size:0.75rem;
+      cursor:pointer;
+    }
+    .btn-report:hover { background:rgba(248,113,113,0.1); }
+    .frame-link {
+      color:#64748b;
+      font-size:0.75rem;
+    }
+    .frame-link a { color:#9ca3af; text-decoration:none; }
+    .frame-link a:hover { text-decoration:underline; }
+
+    .report-popup {
+      position:fixed;
+      inset:0;
+      background:rgba(15,23,42,0.85);
+      display:none;
+      align-items:center;
+      justify-content:center;
+      z-index:50;
+    }
+    .report-dialog {
+      background:#020617;
+      border-radius:0.9rem;
+      padding:1rem 1.2rem;
+      border:1px solid #1f2937;
+      max-width:420px;
+      width:100%;
+      box-shadow:0 20px 40px rgba(0,0,0,.6);
+    }
+    .report-dialog h2 {
+      margin:0 0 0.5rem;
+      font-size:1rem;
+    }
+    .report-dialog textarea {
+      width:100%;
+      min-height:80px;
+      resize:vertical;
+      padding:0.5rem 0.6rem;
+      border-radius:0.6rem;
+      border:1px solid #374151;
+      background:#020617;
+      color:#e5e7eb;
+      font-size:0.85rem;
+      box-sizing:border-box;
+    }
+    .report-dialog-actions {
+      margin-top:0.7rem;
+      display:flex;
+      justify-content:flex-end;
+      gap:0.5rem;
+    }
+    .btn {
+      border-radius:999px;
+      padding:0.3rem 0.9rem;
+      font-size:0.8rem;
+      border:none;
+      cursor:pointer;
+    }
+    .btn-cancel {
+      background:transparent;
+      color:#9ca3af;
+      border:1px solid #374151;
+    }
+    .btn-submit {
+      background:#f97373;
+      color:white;
+    }
+    .report-status {
+      margin-top:0.4rem;
+      font-size:0.8rem;
+      min-height:1em;
+    }
+    @media (max-width:768px){
+      .frame-top, .frame-bottom {
+        padding:0.5rem 0.7rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame-root">
+    <div class="frame-top">
+      <div class="frame-brand">
+        <div class="frame-logo">P</div>
+        <div>Pastebin</div>
+      </div>
+      <div>
+        <a href="${homeUrl}" target="_top">Go to homepage</a>
+      </div>
+    </div>
+
+    <div class="frame-main">
+      <iframe src="${rawUrl}" loading="lazy" referrerpolicy="no-referrer"></iframe>
+    </div>
+
+    <div class="frame-bottom">
+      <div class="frame-bottom-left">
+        <button class="btn-report" id="reportBtn">Report</button>
+        <span class="frame-link">
+          <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a>
+        </span>
+      </div>
+      <div>&copy; ${new Date().getFullYear()} 3nd3r.net</div>
+    </div>
+  </div>
+
+  <div class="report-popup" id="reportPopup">
+    <div class="report-dialog">
+      <h2>Report this ${t}</h2>
+      <p style="font-size:0.8rem;color:#9ca3af;margin:0 0 0.4rem;">
+        If this content is abusive or illegal, briefly describe the issue. Your IP may be logged.
+      </p>
+      <textarea id="reportReason" placeholder="Describe the problem (required, min 5 characters)"></textarea>
+      <div class="report-dialog-actions">
+        <button class="btn btn-cancel" id="reportCancel">Cancel</button>
+        <button class="btn btn-submit" id="reportSubmit">Submit</button>
+      </div>
+      <div class="report-status" id="reportStatus"></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const popup = document.getElementById('reportPopup');
+      const btn = document.getElementById('reportBtn');
+      const cancel = document.getElementById('reportCancel');
+      const submit = document.getElementById('reportSubmit');
+      const reasonEl = document.getElementById('reportReason');
+      const statusEl = document.getElementById('reportStatus');
+
+      if (!popup || !btn || !cancel || !submit || !reasonEl || !statusEl) return;
+
+      btn.addEventListener('click', () => {
+        popup.style.display = 'flex';
+        statusEl.textContent = '';
+        reasonEl.value = '';
+      });
+
+      cancel.addEventListener('click', () => {
+        popup.style.display = 'none';
+      });
+
+      popup.addEventListener('click', (e) => {
+        if (e.target === popup) popup.style.display = 'none';
+      });
+
+      submit.addEventListener('click', () => {
+        const reason = reasonEl.value.trim();
+        if (reason.length < 5) {
+          statusEl.textContent = 'Please provide at least 5 characters.';
+          statusEl.style.color = '#fecaca';
+          return;
+        }
+        statusEl.textContent = 'Sending report…';
+        statusEl.style.color = '#9ca3af';
+
+        fetch('/api/report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: '${t}',
+            shareId: '${e(id)}',
+            reason
+          })
+        }).then(r => r.json())
+        .then(data => {
+          if (data && data.ok) {
+            statusEl.textContent = 'Thank you. Your report has been submitted.';
+            statusEl.style.color = '#4ade80';
+          } else {
+            statusEl.textContent = 'Error submitting report: ' + (data && data.error || 'unknown');
+            statusEl.style.color = '#fecaca';
+          }
+        })
+        .catch(err => {
+          console.error('Report submit error:', err);
+          statusEl.textContent = 'Error submitting report.';
+          statusEl.style.color = '#fecaca';
+        });
+      });
+    })();
+  </script>
 </body>
 </html>`);
     }
@@ -656,7 +1035,7 @@ app.get('/api/usage', requireAuth, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE SHARE (user or admin)
+// DELETE SHARE (user or admin) + delete associated reports
 // ---------------------------------------------------------------------------
 
 app.delete('/api/share/:type/:id', requireAuth, (req, res) => {
@@ -680,6 +1059,9 @@ app.delete('/api/share/:type/:id', requireAuth, (req, res) => {
             console.error('File delete DB error:', err2);
             return res.status(500).json({ error: 'Server error' });
           }
+          db.run('DELETE FROM reports WHERE type = ? AND share_id = ?', ['file', id], err3 => {
+            if (err3) console.error('Report cleanup error (file):', err3);
+          });
           res.json({ ok: true });
         });
       });
@@ -700,6 +1082,9 @@ app.delete('/api/share/:type/:id', requireAuth, (req, res) => {
           console.error('Paste delete DB error:', err2);
           return res.status(500).json({ error: 'Server error' });
         }
+        db.run('DELETE FROM reports WHERE type = ? AND share_id = ?', ['paste', id], err3 => {
+          if (err3) console.error('Report cleanup error (paste):', err3);
+        });
         res.json({ ok: true });
       });
     });
@@ -910,6 +1295,77 @@ app.delete('/api/admin/blocked-ips/:ip', requireAdmin, (req, res) => {
       if (err) {
         console.error('Admin delete blocked IP error:', err);
         return res.status(500).json({ error: 'DB error' });
+      }
+      res.json({ ok: true });
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN: REPORTS
+// ---------------------------------------------------------------------------
+
+app.get('/api/admin/reports', requireAdmin, (req, res) => {
+  const status = String(req.query.status || '').trim().toLowerCase();
+  let sql = 'SELECT * FROM reports';
+  const params = [];
+
+  if (status && status !== 'all') {
+    if (!isValidReportStatus(status)) {
+      return res.status(400).json({ error: 'Invalid status filter' });
+    }
+    sql += ' WHERE status = ?';
+    params.push(status);
+  }
+
+  sql += ' ORDER BY created DESC LIMIT 500';
+
+  db.all(sql, params, (err, rows) => {
+    if (err) {
+      console.error('Admin reports list error:', err);
+      return res.status(500).json({ error: 'DB error' });
+    }
+    res.json(rows || []);
+  });
+});
+
+app.post('/api/admin/reports/:id/update', requireAdmin, (req, res) => {
+  const reportId = req.params.id;
+  const { status, adminNote } = req.body || {};
+
+  const fields = [];
+  const params = [];
+
+  if (typeof status !== 'undefined') {
+    const s = String(status || '').toLowerCase();
+    if (!isValidReportStatus(s)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    fields.push('status = ?');
+    params.push(s);
+  }
+
+  if (typeof adminNote !== 'undefined') {
+    fields.push('admin_note = ?');
+    params.push(String(adminNote || ''));
+  }
+
+  if (!fields.length) {
+    return res.status(400).json({ error: 'No fields to update' });
+  }
+
+  params.push(reportId);
+
+  db.run(
+    `UPDATE reports SET ${fields.join(', ')} WHERE id = ?`,
+    params,
+    function (err) {
+      if (err) {
+        console.error('Admin report update error:', err);
+        return res.status(500).json({ error: 'DB error' });
+      }
+      if (this.changes === 0) {
+        return res.status(404).json({ error: 'Report not found' });
       }
       res.json({ ok: true });
     }
