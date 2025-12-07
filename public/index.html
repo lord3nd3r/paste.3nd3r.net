@@ -35,7 +35,6 @@
       --text-soft: #94a3b8;
       --shadow: 0 10px 30px rgba(0,0,0,0.1);
     }
-    /* TERMINAL THEME (black & green) */
     :root[data-theme="terminal"] {
       --bg: #000000;
       --bg-elevated: #020617;
@@ -66,6 +65,8 @@
       background:var(--bg);
       color:var(--text-primary);
       min-height:100vh;
+      display:flex;
+      flex-direction:column;
     }
 
     header {
@@ -112,6 +113,7 @@
       max-width:1100px;
       margin:0 auto;
       padding:2rem;
+      flex:1 0 auto;
     }
 
     .card {
@@ -289,7 +291,21 @@
       font-size:0.85rem;
       border-top:1px solid var(--border);
       margin-top:2rem;
+      flex-shrink:0;
     }
+
+    .pill {
+      display:inline-block;
+      padding:0.2rem 0.6rem;
+      border-radius:999px;
+      font-size:0.75rem;
+      border:1px solid var(--border);
+      color:var(--text-muted);
+    }
+
+    .pill-admin { border-color:var(--accent); color:var(--accent); }
+    .pill-mod { border-color:var(--success); color:var(--success); }
+    .pill-banned { border-color:var(--danger); color:var(--danger); }
 
     @media (max-width: 768px) {
       header {
@@ -382,7 +398,7 @@
 </head>
 <body>
 
-  <!-- VIEW PAGE (dashboard only) -->
+  <!-- VIEW PAGE (dashboard or admin) -->
   <div id="view" style="display:none">
     <header>
       <div class="brand">
@@ -417,6 +433,7 @@
       </div>
       <div class="header-actions">
         <button id="openDashboard" class="btn btn-success">My Shares</button>
+        <button id="openAdmin" class="btn btn-outline" style="display:none;">Admin</button>
         <button class="btn btn-outline theme-toggle" data-theme-toggle>
           <span class="theme-icon">Moon</span> <span class="theme-label">Dark</span>
         </button>
@@ -496,7 +513,8 @@
   </footer>
 
   <script>
-    // Simple byte formatter for dashboard stats
+    // ---------- Utilities ----------
+
     function formatBytes(bytes) {
       if (!bytes || bytes <= 0) return '0 B';
       const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -510,7 +528,6 @@
       return fixed + ' ' + units[i];
     }
 
-    // Small HTML escape helper for dashboard
     function escapeHtml(str) {
       if (str == null) return '';
       return String(str)
@@ -529,14 +546,15 @@
 
       const extIndex = name.lastIndexOf('.');
       if (extIndex > 0 && (name.length - extIndex) <= 5) {
-        const ext = name.slice(extIndex); // includes dot
+        const ext = name.slice(extIndex);
         const maxBaseLen = Math.max(1, 10 - ext.length);
         return name.slice(0, maxBaseLen) + ext;
       }
       return name.slice(0, 10);
     }
 
-    // THEME INIT (dark, light, terminal)
+    // ---------- Theme ----------
+
     const themeOrder = ['dark', 'light', 'terminal'];
     let themeTogglesInitialized = false;
 
@@ -602,14 +620,20 @@
       updateThemeButtons();
     }
 
-    // ROUTING: server handles /p/:id and /f/:id directly
+    setupThemeToggles();
+
+    // ---------- Routing ----------
+
     if (location.pathname === '/dashboard') {
       renderDashboard();
+    } else if (location.pathname === '/admin') {
+      renderAdmin();
     } else {
       initApp();
     }
 
-    // -------- VIEW: dashboard --------
+    // ---------- Dashboard ----------
+
     function renderDashboard() {
       document.getElementById('app').style.display = 'none';
       document.getElementById('view').style.display = 'block';
@@ -629,16 +653,13 @@
       const statsEl = document.getElementById('dashStats');
       const tableContainer = document.getElementById('dashTableContainer');
 
-      // Fetch usage stats first
       fetch('/api/usage')
         .then(r => {
           if (r.status === 401) {
             tableContainer.innerHTML = '<div class="empty">You must be logged in to view your shares.</div>';
             throw new Error('unauth');
           }
-          if (!r.ok) {
-            throw new Error('usage_failed');
-          }
+          if (!r.ok) throw new Error('usage_failed');
           return r.json();
         })
         .then(stats => {
@@ -655,9 +676,7 @@
             tableContainer.innerHTML = '<div class="empty">You must be logged in to view your shares.</div>';
             return null;
           }
-          if (!r.ok) {
-            throw new Error('shares_failed');
-          }
+          if (!r.ok) throw new Error('shares_failed');
           return r.json();
         })
         .then(list => {
@@ -721,7 +740,6 @@
             </table>
           `;
 
-          // Wire up actions
           const rows = tableContainer.querySelectorAll('tbody tr');
           rows.forEach(row => {
             const id = row.getAttribute('data-id');
@@ -784,7 +802,512 @@
       setupThemeToggles();
     }
 
-    // -------- MAIN APP --------
+    // ---------- Admin Panel ----------
+
+    function renderAdmin() {
+      document.getElementById('app').style.display = 'none';
+      document.getElementById('view').style.display = 'block';
+
+      const vtitle = document.getElementById('vtitle');
+      const vmeta  = document.getElementById('vmeta');
+      const vcontent = document.getElementById('vcontent');
+
+      vtitle.textContent = 'Admin Panel';
+      vmeta.innerHTML = '';
+      document.title = 'Admin — Pastebin';
+
+      vcontent.innerHTML = `
+        <div id="adminGuard" style="margin-bottom:1rem;color:var(--text-muted);"></div>
+        <div id="adminContent" style="display:none;">
+          <div style="display:grid;grid-template-columns:1.1fr 1.1fr;gap:1.5rem;flex-wrap:wrap;">
+            <section style="border:1px solid var(--border);border-radius:1rem;padding:1rem;">
+              <h2 style="margin-bottom:0.8rem;font-size:1.05rem;">Stats</h2>
+              <div id="adminStats">Loading…</div>
+            </section>
+
+            <section style="border:1px solid var(--border);border-radius:1rem;padding:1rem;">
+              <h2 style="margin-bottom:0.8rem;font-size:1.05rem;">Share Lookup</h2>
+              <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.8rem;">
+                <input id="adminShareId" placeholder="Share ID (file or paste)" style="flex:1;padding:0.4rem 0.6rem;border-radius:0.6rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);">
+                <button id="adminShareSearchBtn" class="btn btn-sm">Search</button>
+              </div>
+              <div id="adminShareResult" style="font-size:0.9rem;color:var(--text-muted);"></div>
+            </section>
+          </div>
+
+          <section style="border:1px solid var(--border);border-radius:1rem;padding:1rem;margin-top:1.5rem;">
+            <h2 style="margin-bottom:0.8rem;font-size:1.05rem;">User Search</h2>
+            <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.6rem;flex-wrap:wrap;">
+              <input id="adminUserQuery" placeholder="Search by email" style="flex:1;min-width:180px;padding:0.4rem 0.6rem;border-radius:0.6rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);">
+              <button id="adminUserSearchBtn" class="btn btn-sm">Search</button>
+            </div>
+            <div id="adminUserResults" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:0.8rem;padding:0.5rem;font-size:0.9rem;"></div>
+            <div id="adminUserDetail" style="margin-top:1rem;font-size:0.9rem;"></div>
+          </section>
+
+          <section style="border:1px solid var(--border);border-radius:1rem;padding:1rem;margin-top:1.5rem;">
+            <h2 style="margin-bottom:0.8rem;font-size:1.05rem;">Blocked IPs</h2>
+            <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.8rem;flex-wrap:wrap;">
+              <input id="adminIpInput" placeholder="IP to block" style="flex:1;min-width:150px;padding:0.4rem 0.6rem;border-radius:0.6rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);">
+              <input id="adminIpReason" placeholder="Reason (optional)" style="flex:2;min-width:180px;padding:0.4rem 0.6rem;border-radius:0.6rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);">
+              <button id="adminAddIpBtn" class="btn btn-sm">Block IP</button>
+            </div>
+            <div id="adminIpList" style="max-height:220px;overflow:auto;font-size:0.9rem;border:1px solid var(--border);border-radius:0.8rem;padding:0.5rem;"></div>
+          </section>
+        </div>
+      `;
+
+      const guardEl = document.getElementById('adminGuard');
+      const adminContent = document.getElementById('adminContent');
+
+      fetch('/api/me')
+        .then(r => {
+          if (!r.ok) throw new Error('me_failed');
+          return r.json();
+        })
+        .then(me => {
+          if (!me.loggedIn || !me.isAdmin) {
+            guardEl.textContent = 'Admin only. Log in as an administrator to access this panel.';
+            adminContent.style.display = 'none';
+            return;
+          }
+          guardEl.textContent = 'Signed in as ' + (me.email || '') + ' — Admin';
+          adminContent.style.display = 'block';
+          setupAdminHandlers();
+          loadAdminStats();
+          loadBlockedIps();
+        })
+        .catch(err => {
+          console.error('Error verifying admin:', err);
+          guardEl.textContent = 'Error verifying admin.';
+          adminContent.style.display = 'none';
+        });
+
+      setupThemeToggles();
+    }
+
+    function setupAdminHandlers() {
+      const statsEl = document.getElementById('adminStats');
+      const userQuery = document.getElementById('adminUserQuery');
+      const userSearchBtn = document.getElementById('adminUserSearchBtn');
+      const userResultsEl = document.getElementById('adminUserResults');
+      const userDetailEl = document.getElementById('adminUserDetail');
+
+      const shareIdInput = document.getElementById('adminShareId');
+      const shareSearchBtn = document.getElementById('adminShareSearchBtn');
+      const shareResultEl = document.getElementById('adminShareResult');
+
+      const ipInput = document.getElementById('adminIpInput');
+      const ipReason = document.getElementById('adminIpReason');
+      const addIpBtn = document.getElementById('adminAddIpBtn');
+      const ipList = document.getElementById('adminIpList');
+
+      // User search
+      function doUserSearch() {
+        const q = userQuery.value.trim();
+        if (!q) {
+          userResultsEl.innerHTML = '<div style="color:var(--text-muted);">Enter an email fragment to search.</div>';
+          userDetailEl.innerHTML = '';
+          return;
+        }
+        userResultsEl.textContent = 'Searching…';
+        userDetailEl.innerHTML = '';
+
+        fetch('/api/admin/users?q=' + encodeURIComponent(q))
+          .then(r => r.json())
+          .then(list => {
+            if (!Array.isArray(list) || !list.length) {
+              userResultsEl.innerHTML = '<div style="color:var(--text-muted);">No users found.</div>';
+              return;
+            }
+
+            userResultsEl.innerHTML = `
+              <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+                <thead>
+                  <tr>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">ID</th>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Email</th>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Role</th>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Banned</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${list.map(u => {
+                    const pillClass =
+                      u.is_banned ? 'pill pill-banned' :
+                      (u.role === 'admin' ? 'pill pill-admin' :
+                       (u.role === 'mod' ? 'pill pill-mod' : 'pill'));
+                    const bannedText = u.is_banned ? 'Yes' : 'No';
+                    return `
+                      <tr data-user-id="${u.id}" class="admin-user-row" style="cursor:pointer;">
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${u.id}</td>
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${escapeHtml(u.email)}</td>
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">
+                          <span class="${pillClass}">${escapeHtml(u.role || 'user')}</span>
+                        </td>
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${bannedText}</td>
+                      </tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            `;
+
+            userResultsEl.querySelectorAll('.admin-user-row').forEach(row => {
+              row.addEventListener('click', () => {
+                const userId = row.getAttribute('data-user-id');
+                showUserDetail(userId);
+              });
+            });
+          })
+          .catch(err => {
+            console.error('Admin user search error:', err);
+            userResultsEl.innerHTML = '<div style="color:var(--danger);">Error searching users.</div>';
+          });
+      }
+
+      userSearchBtn.addEventListener('click', doUserSearch);
+      userQuery.addEventListener('keydown', e => { if (e.key === 'Enter') doUserSearch(); });
+
+      function showUserDetail(userId) {
+        userDetailEl.innerHTML = 'Loading user detail…';
+
+        Promise.all([
+          fetch('/api/admin/user/' + encodeURIComponent(userId) + '/shares').then(r => r.json()),
+          fetch('/api/admin/users?q=' + encodeURIComponent(userId)).then(r => r.json()).catch(() => [])
+        ]).then(([shares, userList]) => {
+          const user = Array.isArray(userList)
+            ? userList.find(u => String(u.id) === String(userId))
+            : null;
+
+          const role = user ? (user.role || 'user') : 'user';
+          const banned = user ? !!user.is_banned : false;
+
+          let html = '';
+          html += `<div style="margin-bottom:0.6rem;"><strong>User ID:</strong> ${escapeHtml(userId)}</div>`;
+          if (user) {
+            html += `<div style="margin-bottom:0.6rem;"><strong>Email:</strong> ${escapeHtml(user.email)}</div>`;
+            html += `<div style="margin-bottom:0.6rem;"><strong>Role:</strong> ${escapeHtml(role)}</div>`;
+            html += `<div style="margin-bottom:0.6rem;"><strong>Banned:</strong> ${banned ? 'Yes' : 'No'}</div>`;
+          }
+
+          html += `
+            <div style="margin-bottom:0.8rem;">
+              <label style="font-size:0.85rem;margin-right:0.4rem;">Set role:</label>
+              <select id="adminRoleSelect" style="padding:0.2rem 0.4rem;border-radius:0.4rem;border:1px solid var(--border);background:var(--bg-soft);color:var(--text-primary);">
+                <option value="user"${role === 'user' ? ' selected' : ''}>user</option>
+                <option value="mod"${role === 'mod' ? ' selected' : ''}>mod</option>
+                <option value="admin"${role === 'admin' ? ' selected' : ''}>admin</option>
+              </select>
+              <button id="adminRoleSaveBtn" class="btn btn-sm" style="margin-left:0.4rem;">Save</button>
+            </div>
+            <div style="margin-bottom:0.8rem;">
+              <button id="adminBanToggleBtn" class="btn btn-sm ${banned ? 'btn-success' : 'btn-danger'}">
+                ${banned ? 'Unban user' : 'Ban user'}
+              </button>
+            </div>
+          `;
+
+          if (Array.isArray(shares) && shares.length) {
+            html += `<div style="margin-top:0.8rem;"><strong>Shares:</strong></div>`;
+            html += `
+              <table style="width:100%;border-collapse:collapse;font-size:0.85rem;margin-top:0.3rem;">
+                <thead>
+                  <tr>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">ID</th>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Type</th>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Title</th>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Views</th>
+                    <th style="border-bottom:1px solid var(--border);padding:0.3rem;text-align:left;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${shares.map(s => {
+                    const type = s.type === 'paste' ? 'paste' : 'file';
+                    const href = `/${type === 'paste' ? 'p' : 'f'}/${encodeURIComponent(s.id)}`;
+                    const title = s.title || (type === 'file' ? 'file' : 'paste');
+                    return `
+                      <tr data-share-id="${s.id}" data-share-type="${type}">
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${escapeHtml(s.id)}</td>
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${type}</td>
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">
+                          <a href="${href}" target="_blank" rel="noopener">${escapeHtml(title)}</a>
+                        </td>
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">${s.views || 0}</td>
+                        <td style="padding:0.3rem;border-bottom:1px solid var(--border);">
+                          <button class="btn btn-sm btn-danger admin-delete-share-btn">Delete</button>
+                        </td>
+                      </tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            `;
+          } else {
+            html += '<div style="margin-top:0.6rem;color:var(--text-muted);">No shares for this user.</div>';
+          }
+
+          userDetailEl.innerHTML = html;
+
+          const roleSelect = document.getElementById('adminRoleSelect');
+          const roleSaveBtn = document.getElementById('adminRoleSaveBtn');
+          const banToggleBtn = document.getElementById('adminBanToggleBtn');
+
+          if (roleSaveBtn) {
+            roleSaveBtn.addEventListener('click', () => {
+              const newRole = roleSelect.value;
+              fetch('/api/admin/user/role', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, role: newRole })
+              }).then(r => r.json())
+                .then(data => {
+                  if (data && data.ok) {
+                    alert('Role updated.');
+                    doUserSearch();
+                  } else {
+                    alert('Error updating role: ' + (data && data.error || 'unknown'));
+                  }
+                })
+                .catch(err => {
+                  console.error('Role update error:', err);
+                  alert('Error updating role.');
+                });
+            });
+          }
+
+          if (banToggleBtn) {
+            banToggleBtn.addEventListener('click', () => {
+              const newBanned = !banned;
+              if (newBanned && !confirm('Ban this user? This will also block their future logins.')) return;
+
+              fetch('/api/admin/user/ban', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, banned: newBanned })
+              }).then(r => r.json())
+                .then(data => {
+                  if (data && data.ok) {
+                    alert(newBanned ? 'User banned.' : 'User unbanned.');
+                    doUserSearch();
+                    showUserDetail(userId);
+                  } else {
+                    alert('Error updating ban status: ' + (data && data.error || 'unknown'));
+                  }
+                })
+                .catch(err => {
+                  console.error('Ban update error:', err);
+                  alert('Error updating ban status.');
+                });
+            });
+          }
+
+          userDetailEl.querySelectorAll('.admin-delete-share-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const row = btn.closest('tr');
+              const shareId = row.getAttribute('data-share-id');
+              const shareType = row.getAttribute('data-share-type');
+              if (!confirm(`Delete this ${shareType} share ${shareId}? This cannot be undone.`)) return;
+
+              fetch(`/api/share/${shareType}/${shareId}`, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(data => {
+                  if (data && data.ok) {
+                    alert('Share deleted.');
+                    row.remove();
+                  } else {
+                    alert('Error deleting share: ' + (data && data.error || 'unknown'));
+                  }
+                })
+                .catch(err => {
+                  console.error('Admin delete share error:', err);
+                  alert('Error deleting share.');
+                });
+            });
+          });
+        }).catch(err => {
+          console.error('Admin user detail error:', err);
+          userDetailEl.innerHTML = '<div style="color:var(--danger);">Error loading user detail.</div>';
+        });
+      }
+
+      // Share search
+      function doShareSearch() {
+        const id = shareIdInput.value.trim();
+        if (!id) {
+          shareResultEl.textContent = 'Enter a share ID.';
+          return;
+        }
+        shareResultEl.textContent = 'Searching…';
+
+        fetch('/api/admin/share/' + encodeURIComponent(id))
+          .then(r => r.json())
+          .then(data => {
+            if (data && data.error) {
+              shareResultEl.textContent = 'Not found.';
+              return;
+            }
+            const type = data.type;
+            const s = data.share;
+            const href = `/${type === 'paste' ? 'p' : 'f'}/${encodeURIComponent(s.id)}`;
+            const info = [
+              `<strong>Type:</strong> ${escapeHtml(type)}`,
+              `<strong>ID:</strong> ${escapeHtml(s.id)}`,
+              `<strong>User ID:</strong> ${escapeHtml(String(s.user_id))}`,
+              `<strong>Created:</strong> ${new Date(s.created).toLocaleString()}`,
+              `<strong>Views:</strong> ${s.views || 0}`,
+            ];
+            if (type === 'file') {
+              info.push(`<strong>Size:</strong> ${formatBytes(s.size || 0)}`);
+              info.push(`<strong>MIME:</strong> ${escapeHtml(s.mime || '')}`);
+            }
+            shareResultEl.innerHTML = `
+              <div style="margin-bottom:0.6rem;">
+                ${info.join('<br>')}
+              </div>
+              <div style="margin-bottom:0.6rem;">
+                <a href="${href}" target="_blank" rel="noopener">Open</a>
+              </div>
+              <button id="adminDeleteShareDirectBtn" class="btn btn-sm btn-danger">Delete share</button>
+            `;
+
+            const delBtn = document.getElementById('adminDeleteShareDirectBtn');
+            delBtn.addEventListener('click', () => {
+              if (!confirm(`Delete this ${type} share ${s.id}? This cannot be undone.`)) return;
+              fetch(`/api/share/${type}/${s.id}`, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(resp => {
+                  if (resp && resp.ok) {
+                    alert('Share deleted.');
+                    shareResultEl.textContent = 'Share deleted.';
+                  } else {
+                    alert('Error deleting: ' + (resp && resp.error || 'unknown'));
+                  }
+                })
+                .catch(err => {
+                  console.error('Admin direct delete error:', err);
+                  alert('Error deleting share.');
+                });
+            });
+          })
+          .catch(err => {
+            console.error('Admin share lookup error:', err);
+            shareResultEl.textContent = 'Error looking up share.';
+          });
+      }
+
+      shareSearchBtn.addEventListener('click', doShareSearch);
+      shareIdInput.addEventListener('keydown', e => { if (e.key === 'Enter') doShareSearch(); });
+
+      // IP block list
+      addIpBtn.addEventListener('click', () => {
+        const ip = ipInput.value.trim();
+        const reason = ipReason.value.trim();
+        if (!ip) {
+          alert('IP is required.');
+          return;
+        }
+        fetch('/api/admin/blocked-ips', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip, reason })
+        }).then(r => r.json())
+          .then(data => {
+            if (data && data.ok) {
+              ipInput.value = '';
+              ipReason.value = '';
+              loadBlockedIps();
+            } else {
+              alert('Error blocking IP: ' + (data && data.error || 'unknown'));
+            }
+          })
+          .catch(err => {
+            console.error('Admin block IP error:', err);
+            alert('Error blocking IP.');
+          });
+      });
+
+      function loadBlockedIps() {
+        ipList.textContent = 'Loading…';
+        fetch('/api/admin/blocked-ips')
+          .then(r => r.json())
+          .then(list => {
+            if (!Array.isArray(list) || !list.length) {
+              ipList.innerHTML = '<div style="color:var(--text-muted);">No blocked IPs.</div>';
+              return;
+            }
+            ipList.innerHTML = list.map(row => {
+              const created = new Date(row.created).toLocaleString();
+              const reason = row.reason ? escapeHtml(row.reason) : '(no reason)';
+              return `
+                <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding:0.25rem 0;">
+                  <div>
+                    <div><strong>${escapeHtml(row.ip)}</strong></div>
+                    <div style="font-size:0.8rem;color:var(--text-muted);">${reason} — ${created}</div>
+                  </div>
+                  <button class="btn btn-sm btn-danger admin-unblock-ip-btn" data-ip="${escapeHtml(row.ip)}">Unblock</button>
+                </div>
+              `;
+            }).join('');
+
+            ipList.querySelectorAll('.admin-unblock-ip-btn').forEach(btn => {
+              btn.addEventListener('click', () => {
+                const ip = btn.getAttribute('data-ip');
+                if (!confirm('Unblock ' + ip + '?')) return;
+                fetch('/api/admin/blocked-ips/' + encodeURIComponent(ip), {
+                  method: 'DELETE'
+                }).then(r => r.json())
+                  .then(data => {
+                    if (data && data.ok) {
+                      loadBlockedIps();
+                    } else {
+                      alert('Error unblocking IP: ' + (data && data.error || 'unknown'));
+                    }
+                  })
+                  .catch(err => {
+                    console.error('Admin unblock IP error:', err);
+                    alert('Error unblocking IP.');
+                  });
+              });
+            });
+          })
+          .catch(err => {
+            console.error('Admin blocked IPs error:', err);
+            ipList.innerHTML = '<div style="color:var(--danger);">Error loading blocked IPs.</div>';
+          });
+      }
+
+      window.loadBlockedIps = loadBlockedIps;
+
+      function loadAdminStats() {
+        statsEl.textContent = 'Loading…';
+        fetch('/api/admin/stats')
+          .then(r => r.json())
+          .then(stats => {
+            if (!stats || stats.error) {
+              statsEl.textContent = 'Error loading stats.';
+              return;
+            }
+            const totalSize = formatBytes(stats.totalFilesSize || 0);
+            statsEl.innerHTML = `
+              <div><strong>Total users:</strong> ${stats.totalUsers}</div>
+              <div><strong>Total files:</strong> ${stats.totalFiles} (${totalSize})</div>
+              <div><strong>Total pastes:</strong> ${stats.totalPastes}</div>
+              <div><strong>Blocked IPs:</strong> ${stats.blockedIps}</div>
+            `;
+          })
+          .catch(err => {
+            console.error('Admin stats error:', err);
+            statsEl.textContent = 'Error loading stats.';
+          });
+      }
+
+      window.loadAdminStats = loadAdminStats;
+    }
+
+    function loadAdminStats() {}
+    function loadBlockedIps() {}
+
+    // ---------- Main App ----------
+
     function initApp() {
       document.getElementById('app').style.display = 'block';
       document.getElementById('view').style.display = 'none';
@@ -796,15 +1319,21 @@
       const userLabel = document.getElementById('userLabel');
       const mainContent = document.getElementById('mainContent');
       const loggedOutHint = document.getElementById('loggedOutHint');
+      const adminBtn = document.getElementById('openAdmin');
 
-      function setLoggedIn(email) {
+      function setLoggedIn(me) {
         loggedOutView.style.display = 'none';
         loggedInView.style.display = 'flex';
-        userLabel.textContent = email;
+        userLabel.textContent = me.email;
         mainContent.style.display = 'block';
         loggedOutHint.style.display = 'none';
         authStatusEl.textContent = '';
         authStatusEl.className = 'auth-status';
+        if (me.isAdmin) {
+          adminBtn.style.display = 'inline-flex';
+        } else {
+          adminBtn.style.display = 'none';
+        }
       }
 
       function setLoggedOut() {
@@ -814,19 +1343,17 @@
         loggedOutHint.style.display = 'block';
         authStatusEl.textContent = '';
         authStatusEl.className = 'auth-status';
+        adminBtn.style.display = 'none';
       }
 
-      // Check current auth state
       fetch('/api/me')
         .then(r => {
-          if (!r.ok) {
-            throw new Error('me_failed');
-          }
+          if (!r.ok) throw new Error('me_failed');
           return r.json();
         })
         .then(me => {
           if (me.loggedIn) {
-            setLoggedIn(me.email);
+            setLoggedIn(me);
           } else {
             setLoggedOut();
           }
@@ -836,7 +1363,6 @@
           setLoggedOut();
         });
 
-      // AUTH BUTTONS
       document.getElementById('loginBtn').addEventListener('click', () => {
         const emailInput = document.getElementById('authEmail');
         const passwordInput = document.getElementById('authPassword');
@@ -866,7 +1392,11 @@
             }
             authStatusEl.textContent = 'Logged in!';
             authStatusEl.className = 'auth-status ok';
-            setLoggedIn(data.email);
+            fetch('/api/me')
+              .then(r => r.json())
+              .then(me => {
+                setLoggedIn(me);
+              });
             passwordInput.value = '';
             passwordInput.blur();
           })
@@ -911,7 +1441,11 @@
             }
             authStatusEl.textContent = 'Account created & logged in!';
             authStatusEl.className = 'auth-status ok';
-            setLoggedIn(data.email);
+            fetch('/api/me')
+              .then(r => r.json())
+              .then(me => {
+                setLoggedIn(me);
+              });
             passwordInput.value = '';
             passwordInput.blur();
           })
@@ -933,7 +1467,14 @@
           });
       });
 
-      // MODE
+      document.getElementById('openDashboard').addEventListener('click', () => {
+        location.href = '/dashboard';
+      });
+
+      document.getElementById('openAdmin').addEventListener('click', () => {
+        location.href = '/admin';
+      });
+
       const setMode = m => {
         const filesBtn = document.getElementById('modeFilesBtn');
         const pasteBtn = document.getElementById('modePasteBtn');
@@ -955,7 +1496,6 @@
       document.getElementById('modeFilesBtn').addEventListener('click', () => setMode('files'));
       document.getElementById('modePasteBtn').addEventListener('click', () => setMode('paste'));
 
-      // Initialize mode from storage
       let initialMode = 'files';
       try {
         const storedMode = localStorage.getItem('mode');
@@ -965,7 +1505,6 @@
       } catch (_) {}
       setMode(initialMode);
 
-      // EXPIRY
       document.querySelectorAll('.expiry-btn').forEach(b => {
         b.addEventListener('click', () => {
           document.querySelectorAll('.expiry-btn').forEach(x => x.classList.remove('active'));
@@ -980,7 +1519,6 @@
         return v === 'never' ? null : v;
       };
 
-      // FILE HANDLING
       const fileInput = document.getElementById('fileInput');
       const dropzone  = document.getElementById('fileDropzone');
       const statusEl  = document.getElementById('status');
@@ -1058,7 +1596,6 @@
         });
       }
 
-      // Drag & drop
       ['dragenter', 'dragover'].forEach(evt => {
         dropzone.addEventListener(evt, e => {
           e.preventDefault();
@@ -1082,7 +1619,6 @@
 
       dropzone.addEventListener('click', () => fileInput.click());
 
-      // PASTE
       document.getElementById('pasteSubmitBtn').addEventListener('click', () => {
         const pasteInput = document.getElementById('pasteInput');
         const text = pasteInput.value.trim();
@@ -1152,14 +1688,8 @@
           });
       });
 
-      document.getElementById('openDashboard').addEventListener('click', () => {
-        location.href = '/dashboard';
-      });
-
       setupThemeToggles();
     }
-
-    setupThemeToggles();
   </script>
 </body>
 </html>
