@@ -197,7 +197,6 @@
       flex-wrap:wrap;
     }
 
-    /* Mode buttons: inactive vs active */
     .mode-toggle-row .btn {
       background:var(--bg-soft);
       border:1px solid var(--border);
@@ -281,6 +280,15 @@
       align-items:center;
       gap:0.5rem;
       margin-bottom:1.5rem;
+    }
+
+    footer {
+      text-align:center;
+      padding:1.5rem 0;
+      color:var(--text-muted);
+      font-size:0.85rem;
+      border-top:1px solid var(--border);
+      margin-top:2rem;
     }
 
     @media (max-width: 768px) {
@@ -483,6 +491,10 @@
     </div>
   </div>
 
+  <footer>
+    &copy; 2026 3nd3r.net
+  </footer>
+
   <script>
     // Simple byte formatter for dashboard stats
     function formatBytes(bytes) {
@@ -507,6 +519,21 @@
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+    }
+
+    // Truncate file titles for dashboard to max 10 chars (preserve short ext)
+    function truncateFileTitle(name) {
+      if (!name) return '';
+      name = String(name);
+      if (name.length <= 10) return name;
+
+      const extIndex = name.lastIndexOf('.');
+      if (extIndex > 0 && (name.length - extIndex) <= 5) {
+        const ext = name.slice(extIndex); // includes dot
+        const maxBaseLen = Math.max(1, 10 - ext.length);
+        return name.slice(0, maxBaseLen) + ext;
+      }
+      return name.slice(0, 10);
     }
 
     // THEME INIT (dark, light, terminal)
@@ -543,7 +570,7 @@
       } else if (next === 'dark') {
         iconText = 'Moon';
         labelText = 'Dark';
-      } else { // terminal
+      } else {
         iconText = '⌨︎';
         labelText = 'Terminal';
       }
@@ -609,6 +636,9 @@
             tableContainer.innerHTML = '<div class="empty">You must be logged in to view your shares.</div>';
             throw new Error('unauth');
           }
+          if (!r.ok) {
+            throw new Error('usage_failed');
+          }
           return r.json();
         })
         .then(stats => {
@@ -617,7 +647,6 @@
           const left = formatBytes(stats.remainingBytes);
           statsEl.textContent =
             `You have ${stats.fileCount} file${stats.fileCount === 1 ? '' : 's'}, using ${used} of ${quota} (${left} remaining).`;
-          // Now fetch shares
           return fetch('/api/shares');
         })
         .then(r => {
@@ -625,6 +654,9 @@
           if (r.status === 401) {
             tableContainer.innerHTML = '<div class="empty">You must be logged in to view your shares.</div>';
             return null;
+          }
+          if (!r.ok) {
+            throw new Error('shares_failed');
           }
           return r.json();
         })
@@ -661,11 +693,17 @@
                       expiresLabel = escapeHtml(ex.toLocaleString());
                     }
                   }
+
+                  const rawTitle = s.title || (type === 'file' ? 'file' : 'paste');
+                  const displayTitle = type === 'file'
+                    ? truncateFileTitle(rawTitle)
+                    : rawTitle;
+
                   return `
                     <tr data-id="${escapeHtml(s.id)}" data-type="${type}">
                       <td>
                         <a href="${href}" target="_blank" rel="noopener">
-                          ${escapeHtml(s.title)}
+                          ${escapeHtml(displayTitle)}
                         </a>
                       </td>
                       <td>${escapeHtml(type)}</td>
@@ -739,10 +777,10 @@
         })
         .catch(err => {
           if (err && err.message === 'unauth') return;
+          console.error('Error loading dashboard:', err);
           tableContainer.innerHTML = '<div class="empty">Error loading shares.</div>';
         });
 
-      // Make sure theme toggles are wired even in dashboard-only route
       setupThemeToggles();
     }
 
@@ -780,7 +818,12 @@
 
       // Check current auth state
       fetch('/api/me')
-        .then(r => r.json())
+        .then(r => {
+          if (!r.ok) {
+            throw new Error('me_failed');
+          }
+          return r.json();
+        })
         .then(me => {
           if (me.loggedIn) {
             setLoggedIn(me.email);
@@ -788,14 +831,17 @@
             setLoggedOut();
           }
         })
-        .catch(() => {
+        .catch(err => {
+          console.error('Error fetching /api/me:', err);
           setLoggedOut();
         });
 
       // AUTH BUTTONS
-      document.getElementById('loginBtn').onclick = () => {
-        const email = document.getElementById('authEmail').value.trim();
-        const password = document.getElementById('authPassword').value;
+      document.getElementById('loginBtn').addEventListener('click', () => {
+        const emailInput = document.getElementById('authEmail');
+        const passwordInput = document.getElementById('authPassword');
+        const email = emailInput.value.trim();
+        const password = passwordInput.value;
 
         if (!email || !password) {
           authStatusEl.textContent = 'Email and password are required.';
@@ -821,16 +867,21 @@
             authStatusEl.textContent = 'Logged in!';
             authStatusEl.className = 'auth-status ok';
             setLoggedIn(data.email);
+            passwordInput.value = '';
+            passwordInput.blur();
           })
-          .catch(() => {
+          .catch(err => {
+            console.error('Error logging in:', err);
             authStatusEl.textContent = 'Error logging in.';
             authStatusEl.className = 'auth-status error';
           });
-      };
+      });
 
-      document.getElementById('registerBtn').onclick = () => {
-        const email = document.getElementById('authEmail').value.trim();
-        const password = document.getElementById('authPassword').value;
+      document.getElementById('registerBtn').addEventListener('click', () => {
+        const emailInput = document.getElementById('authEmail');
+        const passwordInput = document.getElementById('authPassword');
+        const email = emailInput.value.trim();
+        const password = passwordInput.value;
 
         if (!email || !password) {
           authStatusEl.textContent = 'Email and password are required.';
@@ -861,22 +912,26 @@
             authStatusEl.textContent = 'Account created & logged in!';
             authStatusEl.className = 'auth-status ok';
             setLoggedIn(data.email);
+            passwordInput.value = '';
+            passwordInput.blur();
           })
-          .catch(() => {
+          .catch(err => {
+            console.error('Error creating account:', err);
             authStatusEl.textContent = 'Error creating account.';
             authStatusEl.className = 'auth-status error';
           });
-      };
+      });
 
-      document.getElementById('logoutBtn').onclick = () => {
+      document.getElementById('logoutBtn').addEventListener('click', () => {
         fetch('/api/logout', { method: 'POST' })
           .then(() => {
             setLoggedOut();
           })
-          .catch(() => {
+          .catch(err => {
+            console.error('Error logging out:', err);
             setLoggedOut();
           });
-      };
+      });
 
       // MODE
       const setMode = m => {
@@ -897,8 +952,8 @@
         } catch (_) {}
       };
 
-      document.getElementById('modeFilesBtn').onclick = () => setMode('files');
-      document.getElementById('modePasteBtn').onclick = () => setMode('paste');
+      document.getElementById('modeFilesBtn').addEventListener('click', () => setMode('files'));
+      document.getElementById('modePasteBtn').addEventListener('click', () => setMode('paste'));
 
       // Initialize mode from storage
       let initialMode = 'files';
@@ -912,10 +967,10 @@
 
       // EXPIRY
       document.querySelectorAll('.expiry-btn').forEach(b => {
-        b.onclick = () => {
+        b.addEventListener('click', () => {
           document.querySelectorAll('.expiry-btn').forEach(x => x.classList.remove('active'));
           b.classList.add('active');
-        };
+        });
       });
 
       const getExpiry = () => {
@@ -930,8 +985,8 @@
       const dropzone  = document.getElementById('fileDropzone');
       const statusEl  = document.getElementById('status');
 
-      document.getElementById('browseBtn').onclick = () => fileInput.click();
-      fileInput.onchange = e => handleFiles(e.target.files);
+      document.getElementById('browseBtn').addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', e => handleFiles(e.target.files));
 
       function handleFiles(files) {
         if (!files || !files.length) return;
@@ -942,7 +997,7 @@
         const uploads = Array.from(files).map(file => {
           const fd = new FormData();
           fd.append('file', file);
-          if (expiry) fd.append('expiry', expiry); // ready for backend logic
+          if (expiry) fd.append('expiry', expiry);
 
           return fetch('/upload', {
             method: 'POST',
@@ -952,9 +1007,15 @@
               if (r.status === 401) {
                 return { _unauth: true };
               }
+              if (!r.ok) {
+                return { _error: true };
+              }
               return r.json();
             })
-            .catch(() => ({ _error: true }));
+            .catch(err => {
+              console.error('Upload error:', err);
+              return { _error: true };
+            });
         });
 
         Promise.all(uploads).then(results => {
@@ -965,20 +1026,35 @@
 
           const success = results.filter(r => r && !r._unauth && !r._error && !r.error && r.url);
           if (!success.length) {
+            console.error('Upload responses:', results);
             statusEl.textContent = 'Upload failed.';
             return;
           }
 
-          const linksHtml = success
-            .map((r, idx) => {
-              const url = r.url;
-              return `<div>${success.length > 1 ? (idx + 1) + '. ' : ''}<a href="${url}" target="_blank" rel="noopener" style="font-size:1.1rem;font-weight:600">${url}</a></div>`;
-            })
-            .join('');
-
           const countLabel = success.length > 1 ? `${success.length} files` : '1 file';
-          statusEl.innerHTML =
-            `Uploaded ${countLabel}!<br>${linksHtml}`;
+
+          statusEl.textContent = '';
+          const header = document.createElement('div');
+          header.textContent = `Uploaded ${countLabel}!`;
+          statusEl.appendChild(header);
+
+          success.forEach((r, idx) => {
+            const url = r.url;
+            const line = document.createElement('div');
+            if (success.length > 1) {
+              const prefix = document.createTextNode(`${idx + 1}. `);
+              line.appendChild(prefix);
+            }
+            const link = document.createElement('a');
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.style.fontSize = '1.1rem';
+            link.style.fontWeight = '600';
+            link.textContent = url;
+            line.appendChild(link);
+            statusEl.appendChild(line);
+          });
         });
       }
 
@@ -1007,8 +1083,9 @@
       dropzone.addEventListener('click', () => fileInput.click());
 
       // PASTE
-      document.getElementById('pasteSubmitBtn').onclick = () => {
-        const text = document.getElementById('pasteInput').value.trim();
+      document.getElementById('pasteSubmitBtn').addEventListener('click', () => {
+        const pasteInput = document.getElementById('pasteInput');
+        const text = pasteInput.value.trim();
         if (!text) return;
 
         statusEl.textContent = 'Saving…';
@@ -1030,6 +1107,9 @@
               statusEl.textContent = 'You must be logged in to save pastes.';
               return null;
             }
+            if (!r.ok) {
+              throw new Error('paste_failed');
+            }
             return r.json();
           })
           .then(data => {
@@ -1049,25 +1129,36 @@
               };
               expiryLabel = map[expiry] || '';
             }
-            statusEl.innerHTML =
-              `Paste ready${expiryLabel}!<br><a href="${pasteUrl}" target="_blank" rel="noopener" style="font-size:1.4rem;font-weight:600">${pasteUrl}</a>`;
-            document.getElementById('pasteInput').value = '';
+
+            statusEl.textContent = '';
+            const line1 = document.createElement('div');
+            line1.textContent = `Paste ready${expiryLabel}!`;
+            statusEl.appendChild(line1);
+
+            const link = document.createElement('a');
+            link.href = pasteUrl;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.style.fontSize = '1.4rem';
+            link.style.fontWeight = '600';
+            link.textContent = pasteUrl;
+            statusEl.appendChild(link);
+
+            pasteInput.value = '';
           })
-          .catch(() => {
+          .catch(err => {
+            console.error('Error saving paste:', err);
             statusEl.textContent = 'Error saving paste.';
           });
-      };
+      });
 
-      // DASHBOARD
-      document.getElementById('openDashboard').onclick = () => {
+      document.getElementById('openDashboard').addEventListener('click', () => {
         location.href = '/dashboard';
-      };
+      });
 
-      // Wire theme toggles on home too
       setupThemeToggles();
     }
 
-    // Ensure theme toggles are wired even if initApp/renderDashboard were already called
     setupThemeToggles();
   </script>
 </body>
