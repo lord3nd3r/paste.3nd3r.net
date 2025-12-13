@@ -1254,7 +1254,7 @@ if (!domain && CONFIG.SITE_URL) {
     // ignore
   }
 }
-if (!domain) domain = 'paste.3nd3r.net';
+  if (!domain) domain = 'justpasted.com';
 
 let httpsOptions = null;
 try {

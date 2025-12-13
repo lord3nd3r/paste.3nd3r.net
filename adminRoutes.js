@@ -69,7 +69,7 @@ module.exports = function registerAdminRoutes(app, deps) {
       // verify connection
       await transporter.verify();
       // send a test message
-      await transporter.sendMail({ from: mail.FROM || CONFIG.MAIL.FROM, to, subject: 'SMTP test', text: 'This is a test message from paste.3nd3r.net' });
+      await transporter.sendMail({ from: mail.FROM || CONFIG.MAIL.FROM, to, subject: 'SMTP test', text: 'This is a test message from justpasted.com' });
       res.json({ ok: true });
     } catch (e) {
       console.error('SMTP test error:', e && e.message ? e.message : e);

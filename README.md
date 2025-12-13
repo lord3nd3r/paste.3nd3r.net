@@ -24,8 +24,8 @@ A small, self-hosted paste & file sharing application (Node.js + Express + SQLit
 2. Clone & install
 
 ```bash
-git clone https://github.com/lord3nd3r/paste.3nd3r.net.git
-cd paste.3nd3r.net
+git clone https://github.com/lord3nd3r/justpasted.com.git
+cd justpasted.com
 npm install
 ```
 
