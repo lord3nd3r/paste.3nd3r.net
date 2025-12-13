@@ -1,8 +1,8 @@
-# paste.3nd3r.net
+# JustPasted
 
 A small, self-hosted paste & file sharing application (Node.js + Express + SQLite).
 
-[Live Demo](https://paste.3nd3r.net) — self-host it and control your data.
+[Live Demo](https://justpasted.com) — self-host it and control your data.
 
 ## Features
 - Instant file & text sharing
