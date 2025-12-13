@@ -23,12 +23,12 @@ const CONFIG = {
 
   // Mail server settings (for nodemailer). Fill these in or set env vars.
   MAIL: {
-    HOST: process.env.MAIL_HOST || '',
+    HOST: process.env.MAIL_HOST || 'smtp.gmail.com',
     PORT: Number(process.env.MAIL_PORT) || 587,
     SECURE: process.env.MAIL_SECURE === '1' || false,
     AUTH_USER: process.env.MAIL_USER || '',
-    AUTH_PASS: process.env.MAIL_PASS || '',
-    FROM: process.env.MAIL_FROM || 'no-reply@example.com'
+    AUTH_PASS: process.env.MAIL_PASS || null,
+    FROM: process.env.MAIL_FROM || ''
   },
 
   // Site / domain
@@ -37,6 +37,9 @@ const CONFIG = {
 
   // Public site URL. If not set, will derive from LETSENCRYPT_DOMAIN when available.
   SITE_URL: process.env.SITE_URL || (process.env.LETSENCRYPT_DOMAIN ? `https://${process.env.LETSENCRYPT_DOMAIN}` : null),
+
+  // Public site display name (brand)
+  SITE_NAME: process.env.SITE_NAME || 'JustPasted',
 
   // Letsencrypt paths (optional)
   LETSENCRYPT: {
