@@ -1215,7 +1215,17 @@ app.post('/api/ping', (req, res) => {
 // HTTPS SERVER
 // ---------------------------------------------------------------------------
 
-const domain = 'paste.3nd3r.net';
+// Determine domain used for Let's Encrypt certs. Prefer env var, then SITE_URL, then fallback.
+let domain = process.env.LETSENCRYPT_DOMAIN || null;
+if (!domain && CONFIG.SITE_URL) {
+  try {
+    const u = new URL(CONFIG.SITE_URL);
+    domain = u.hostname;
+  } catch (e) {
+    // ignore
+  }
+}
+if (!domain) domain = 'paste.3nd3r.net';
 
 let httpsOptions = null;
 try {
@@ -1224,7 +1234,7 @@ try {
     cert: fs.readFileSync(`/etc/letsencrypt/live/${domain}/fullchain.pem`)
   };
 } catch (err) {
-  console.warn('Could not load HTTPS certs, running HTTP-only:', err.message);
+  console.warn(`Could not load HTTPS certs for ${domain}, running HTTP-only:`, err.message);
 }
 
 http.createServer((req, res) => {
