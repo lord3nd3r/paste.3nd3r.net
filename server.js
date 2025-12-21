@@ -430,6 +430,7 @@ app.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
     const imgExts = ['.png', '.jpg', '.jpeg', '.webp', '.avif'];
     if (imgExts.includes(ext)) {
       try {
+        // Re-encode to strip metadata and normalize format
         let pipeline = sharp(req.file.path, { failOnError: false });
 
         if (ext === '.png') {
@@ -449,6 +450,33 @@ app.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
 
         const buffer = await pipeline.toBuffer();
         fs.writeFileSync(req.file.path, buffer);
+
+        // Generate resized and thumbnail variants to improve display of large images
+        try {
+          const id = path.basename(req.file.filename, path.extname(req.file.filename));
+          const resizedFilename = id + '-resized' + ext;
+          const thumbFilename = id + '-thumb' + ext;
+          const resizedPath = path.join(UPLOAD_DIR, resizedFilename);
+          const thumbPath = path.join(UPLOAD_DIR, thumbFilename);
+
+          // Resize parameters: do not upscale if image is smaller
+          const RESIZED_MAX_WIDTH = 1200;
+          const THUMB_MAX_WIDTH = 400;
+
+          await sharp(req.file.path, { failOnError: false })
+            .resize({ width: RESIZED_MAX_WIDTH, withoutEnlargement: true })
+            .toFile(resizedPath);
+
+          await sharp(req.file.path, { failOnError: false })
+            .resize({ width: THUMB_MAX_WIDTH, withoutEnlargement: true })
+            .toFile(thumbPath);
+
+          // Attach generated filenames to request for DB insert
+          req.file.resizedFilename = resizedFilename;
+          req.file.thumbFilename = thumbFilename;
+        } catch (genErr) {
+          console.error('Error generating resized/thumb variants:', genErr);
+        }
       } catch (imgErr) {
         console.error('Sharp processing error (continuing with original file):', imgErr);
       }
@@ -480,10 +508,12 @@ app.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
 
         const id = path.basename(req.file.filename, path.extname(req.file.filename));
         const shortOriginal = shrinkName10(req.file.originalname);
+        const resized = req.file.resizedFilename || null;
+        const thumb = req.file.thumbFilename || null;
 
         db.run(
-          `INSERT INTO files (id, filename, original_name, size, mime, created, user_id, views, expires)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+          `INSERT INTO files (id, filename, original_name, size, mime, created, user_id, views, expires, resized_filename, thumb_filename)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
           [
             id,
             req.file.filename,
@@ -492,7 +522,9 @@ app.post('/upload', requireAuth, upload.single('file'), async (req, res) => {
             req.file.mimetype,
             Date.now(),
             req.user.id,
-            expiresAt
+            expiresAt,
+            resized,
+            thumb
           ],
           err2 => {
             if (err2) {
@@ -604,6 +636,8 @@ app.get('/f/:id', (req, res) => {
 
       const title = e(file.original_name || 'File');
       const fileUrl = `/raw/file/${encodeURIComponent(id)}`;
+      // Prefer served resized variant for viewing if available
+      const viewerSrc = file.resized_filename ? `/uploads/${encodeURIComponent(file.resized_filename)}` : fileUrl;
 
       // Simple frame chrome with header/footer and main viewer
       res.send(`<!DOCTYPE html>
@@ -639,10 +673,16 @@ app.get('/f/:id', (req, res) => {
   </header>
   <div class="main">
     <div class="frame">
-      ${
+      {
         ['.png','.jpg','.jpeg','.gif','.webp','.bmp','.svg','.avif']
           .includes(path.extname(file.filename).toLowerCase())
-          ? `<img src="${fileUrl}" alt="${title}">`
+          ? (`<div style="display:flex;flex-direction:column;align-items:center;gap:0.6rem;">
+                <img id="viewerImg" src="${viewerSrc}" alt="${title}">
+                <div>
+                  <a href="${fileUrl}" class="download-link" download>Download</a>
+                  <button class="button" id="toggleFullBtn">Full size</button>
+                </div>
+             </div>`)
           : `<iframe src="${fileUrl}" style="width:100%;height:80vh;border:none;background:#020617;"></iframe>`
       }
     </div>
@@ -710,6 +750,25 @@ app.get('/p/:id', (req, res) => {
 </head>
 <body>
   <header>
+  (function(){
+    const btn = document.getElementById('toggleFullBtn');
+    const img = document.getElementById('viewerImg');
+    if (btn && img) {
+      let showingFull = false;
+      const resizedSrc = img.getAttribute('src');
+      const originalSrc = '${fileUrl}';
+      btn.addEventListener('click', function(){
+        if (!showingFull) {
+          img.setAttribute('src', originalSrc);
+          btn.textContent = 'Show scaled';
+        } else {
+          img.setAttribute('src', resizedSrc);
+          btn.textContent = 'Full size';
+        }
+        showingFull = !showingFull;
+      });
+    }
+  })();
     <div>
       <span class="brand"><a href="/">JustPasted</a></span>
     </div>

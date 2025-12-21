@@ -72,6 +72,9 @@ function initDb() {
     db.run(`ALTER TABLE pastes ADD COLUMN views INTEGER DEFAULT 0`, err => {});
     db.run(`ALTER TABLE files ADD COLUMN expires INTEGER`, err => {});
     db.run(`ALTER TABLE pastes ADD COLUMN expires INTEGER`, err => {});
+    // optional columns for resized/thumbnail image variants
+    db.run(`ALTER TABLE files ADD COLUMN resized_filename TEXT`, err => {});
+    db.run(`ALTER TABLE files ADD COLUMN thumb_filename TEXT`, err => {});
 
     // add last_seen to sessions for presence tracking
     db.run(`ALTER TABLE sessions ADD COLUMN last_seen INTEGER`, err => {});
