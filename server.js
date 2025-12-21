@@ -688,8 +688,8 @@ app.get('/f/:id', (req, res) => {
     a:hover { text-decoration:underline; }
     .brand { font-weight:600; }
     .main { flex:1 1 auto; background:#020617; display:flex; align-items:center; justify-content:center; padding:1rem; }
-    .frame { width:100%; height:100%; max-width:1200px; max-height:100vh; display:flex; align-items:center; justify-content:center; }
-    img { max-width:100%; max-height:100%; }
+    .frame { width:100%; max-width:100%; max-height:calc(100vh - 160px); display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    img { max-width:100%; height:auto; max-height:calc(100vh - 160px); object-fit:contain; display:block; }
     .download-link { margin-left:1rem; font-size:0.9rem; }
     .button { border-radius:999px; border:1px solid #374151; padding:0.25rem 0.75rem; font-size:0.85rem; background:transparent; color:#e5e7eb; cursor:pointer; }
     .button:hover { background:#111827; }
@@ -717,6 +717,34 @@ app.get('/f/:id', (req, res) => {
       <span style="opacity:0.8;">Report: include this ID to admin &mdash; ${e(id)}</span>
     </div>
   </footer>
+  <script>
+  (function(){
+    const btn = document.getElementById('toggleFullBtn');
+    const img = document.getElementById('viewerImg');
+    const frame = document.querySelector('.frame');
+    if (btn && img) {
+      let showingFull = false;
+      const resizedSrc = img.getAttribute('src');
+      const originalSrc = '${fileUrl}';
+      btn.addEventListener('click', function(){
+        if (!showingFull) {
+          img.setAttribute('src', originalSrc);
+          img.style.maxWidth = 'none';
+          img.style.maxHeight = 'none';
+          if (frame) frame.style.overflow = 'auto';
+          btn.textContent = 'Show scaled';
+        } else {
+          img.setAttribute('src', resizedSrc);
+          img.style.maxWidth = '100%';
+          img.style.maxHeight = 'calc(100vh - 160px)';
+          if (frame) frame.style.overflow = 'hidden';
+          btn.textContent = 'Full size';
+        }
+        showingFull = !showingFull;
+      });
+    }
+  })();
+  </script>
 </body>
 </html>`);
     }
@@ -773,25 +801,6 @@ app.get('/p/:id', (req, res) => {
 </head>
 <body>
   <header>
-  (function(){
-    const btn = document.getElementById('toggleFullBtn');
-    const img = document.getElementById('viewerImg');
-    if (btn && img) {
-      let showingFull = false;
-      const resizedSrc = img.getAttribute('src');
-      const originalSrc = '${fileUrl}';
-      btn.addEventListener('click', function(){
-        if (!showingFull) {
-          img.setAttribute('src', originalSrc);
-          btn.textContent = 'Show scaled';
-        } else {
-          img.setAttribute('src', resizedSrc);
-          btn.textContent = 'Full size';
-        }
-        showingFull = !showingFull;
-      });
-    }
-  })();
     <div>
       <span class="brand"><a href="/">JustPasted</a></span>
     </div>
