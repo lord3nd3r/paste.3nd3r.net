@@ -50,6 +50,81 @@ loadAllSettings((err, applied) => {
 });
 
 // ---------------------------------------------------------------------------
+// Generate missing resized/thumb variants on startup (non-blocking)
+// Controlled by env GENERATE_VARIANTS_ON_STARTUP (set to '0' to disable)
+// ---------------------------------------------------------------------------
+async function generateMissingVariantsOnStartup() {
+  if (process.env.GENERATE_VARIANTS_ON_STARTUP === '0') {
+    console.log('generateMissingVariantsOnStartup: disabled by env');
+    return;
+  }
+  let sharpLib = null;
+  try { sharpLib = require('sharp'); } catch (e) { console.warn('sharp not available; skipping startup variant generation'); return; }
+
+  // small concurrent queue
+  const CONCURRENCY = 4;
+  const queue = [];
+  function runNext() {
+    if (!queue.length) return Promise.resolve();
+    const fn = queue.shift();
+    return fn().then(() => runNext());
+  }
+
+  db.all('SELECT id, filename, resized_filename, thumb_filename FROM files WHERE (resized_filename IS NULL OR thumb_filename IS NULL)', [], (err, rows) => {
+    if (err) {
+      console.error('Variant generation DB query failed:', err);
+      return;
+    }
+    if (!rows || rows.length === 0) return console.log('No image variants to generate on startup');
+    console.log('Generating image variants for', rows.length, 'files (startup)');
+
+    rows.forEach(row => {
+      queue.push(async () => {
+        try {
+          const ext = path.extname(row.filename || '').toLowerCase();
+          const imgExts = ['.png', '.jpg', '.jpeg', '.webp', '.avif', '.gif', '.bmp', '.svg'];
+          if (!imgExts.includes(ext)) return;
+          const id = path.basename(row.filename, ext);
+          const origPath = path.join(UPLOAD_DIR, row.filename);
+          if (!fs.existsSync(origPath)) return console.warn('Original file missing for', row.id);
+
+          const resizedFilename = id + '-resized' + ext;
+          const thumbFilename = id + '-thumb' + ext;
+          const resizedPath = path.join(UPLOAD_DIR, resizedFilename);
+          const thumbPath = path.join(UPLOAD_DIR, thumbFilename);
+
+          const RESIZED_MAX_WIDTH = 1200;
+          const THUMB_MAX_WIDTH = 400;
+
+          // generate resized/thumb (don't overwrite if already exists)
+          if (!fs.existsSync(resizedPath)) {
+            await sharpLib(origPath, { failOnError: false }).resize({ width: RESIZED_MAX_WIDTH, withoutEnlargement: true }).toFile(resizedPath);
+          }
+          if (!fs.existsSync(thumbPath)) {
+            await sharpLib(origPath, { failOnError: false }).resize({ width: THUMB_MAX_WIDTH, withoutEnlargement: true }).toFile(thumbPath);
+          }
+
+          db.run('UPDATE files SET resized_filename = ?, thumb_filename = ? WHERE id = ?', [resizedFilename, thumbFilename, row.id], err2 => {
+            if (err2) console.error('Error updating file row with variant names for', row.id, err2);
+            else console.log('Generated variants for', row.id);
+          });
+        } catch (e) {
+          console.error('Error generating variants for', row.id, e && e.message);
+        }
+      });
+    });
+
+    // start workers
+    const runners = [];
+    for (let i = 0; i < CONCURRENCY; i++) runners.push(runNext());
+    Promise.all(runners).then(() => console.log('Startup image variant generation complete'));
+  });
+}
+
+// kick off without blocking startup
+setImmediate(generateMissingVariantsOnStartup);
+
+// ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
 
