@@ -682,7 +682,48 @@ app.get('/raw/file/:id', (req, res) => {
       const fp = path.join(UPLOAD_DIR, file.filename);
       if (!fs.existsSync(fp)) return res.status(404).send('Not found');
 
-      res.sendFile(fp);
+      // Support HTTP Range requests for streaming/seek
+      const stat = fs.statSync(fp);
+      const total = stat.size;
+      const range = req.headers.range;
+      const contentType = file.mime || 'application/octet-stream';
+
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Type', contentType);
+
+      if (!range) {
+        // No range — send entire file
+        res.setHeader('Content-Length', total);
+        // Let browsers decide inline vs download (download attribute on links is used)
+        const stream = fs.createReadStream(fp);
+        stream.on('open', () => stream.pipe(res));
+        stream.on('error', e => {
+          console.error('File stream error:', e);
+          return res.status(500).end();
+        });
+        return;
+      }
+
+      // Parse range header: bytes=start-end
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+      if (isNaN(start) || isNaN(end) || start > end || end >= total) {
+        res.status(416).setHeader('Content-Range', `bytes */${total}`);
+        return res.end();
+      }
+
+      const chunkSize = end - start + 1;
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+      res.setHeader('Content-Length', chunkSize);
+
+      const stream = fs.createReadStream(fp, { start, end });
+      stream.on('open', () => stream.pipe(res));
+      stream.on('error', e => {
+        console.error('Range stream error:', e);
+        return res.status(500).end();
+      });
     }
   );
 });
@@ -713,6 +754,7 @@ app.get('/f/:id', (req, res) => {
       const fileUrl = `/raw/file/${encodeURIComponent(id)}`;
       // Prefer served resized variant for viewing if available
       const viewerSrc = file.resized_filename ? `/uploads/${encodeURIComponent(file.resized_filename)}` : fileUrl;
+      const mime = (file.mime || '').toLowerCase();
 
       // Simple frame chrome with header/footer and main viewer
       res.send(`<!DOCTYPE html>
@@ -749,8 +791,7 @@ app.get('/f/:id', (req, res) => {
   <div class="main">
     <div class="frame">
       {
-        ['.png','.jpg','.jpeg','.gif','.webp','.bmp','.svg','.avif']
-          .includes(path.extname(file.filename).toLowerCase())
+        (mime && mime.startsWith('image/'))
           ? (`<div style="display:flex;flex-direction:column;align-items:center;gap:0.6rem;">
                 <img id="viewerImg" src="${viewerSrc}" alt="${title}">
                 <div>
@@ -758,7 +799,23 @@ app.get('/f/:id', (req, res) => {
                   <button class="button" id="toggleFullBtn">Full size</button>
                 </div>
              </div>`)
-          : `<iframe src="${fileUrl}" style="width:100%;height:80vh;border:none;background:#020617;"></iframe>`
+          : (mime && mime.startsWith('audio/'))
+            ? (`<div style="display:flex;flex-direction:column;align-items:center;gap:0.6rem;">
+                  <audio controls style="max-width:100%;width:100%;">
+                    <source src="${fileUrl}" type="${mime}">
+                    Your browser does not support the audio element.
+                  </audio>
+                  <div><a href="${fileUrl}" class="download-link" download>Download</a></div>
+               </div>`)
+            : (mime && mime.startsWith('video/'))
+              ? (`<div style="display:flex;flex-direction:column;align-items:center;gap:0.6rem;">
+                    <video controls style="max-width:100%;height:auto;">
+                      <source src="${fileUrl}" type="${mime}">
+                      Your browser does not support the video element.
+                    </video>
+                    <div><a href="${fileUrl}" class="download-link" download>Download</a></div>
+                 </div>`)
+              : `<iframe src="${fileUrl}" style="width:100%;height:80vh;border:none;background:#020617;"></iframe>`
       }
     </div>
   </div>
